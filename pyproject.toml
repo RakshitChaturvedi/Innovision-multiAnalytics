@@ -1,0 +1,11 @@
+[project]
+name = "innovision-multianalytics"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "pydantic-settings>=2.14.1",
+    "redis>=8.0.0",
+    "sqlalchemy>=2.0.50",
+]
