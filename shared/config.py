@@ -24,5 +24,5 @@ class Settings(BaseSettings):
         env_file=".env"
     )
 
-
+#type: ignore[call-arg]
 settings = Settings()

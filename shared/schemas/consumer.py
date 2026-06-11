@@ -2,6 +2,7 @@ import logging
 import asyncio
 import redis.asyncio as aioredis
 
+from typing import Optional, Any
 from abc import ABC, abstractmethod
 
 logger = logging.getLogger(__name__)
@@ -21,7 +22,7 @@ class BaseStreamConsumer(ABC):
         self.batch_size = batch_size
         self.block_ms = block_ms
 
-        self.redis: aioredis.Redis = None
+        self.redis: Optional[aioredis.Redis] = None
         self._running = False
         self._catch_up_mode = False
         self.CATCH_UP_THRESHOLD = 500
@@ -98,7 +99,7 @@ class BaseStreamConsumer(ABC):
                 logger.error(f"{self.consumer_name} loop error: {e}")
                 await asyncio.sleep(1)
     
-    async def _process_with_ack(self, msg_id: str, data: str):
+    async def _process_with_ack(self, msg_id: str, data: dict[str, Any]):
         try:
             await self.process(msg_id, data)
             await self.redis.xack(self.stream_key, self.group_name, msg_id)
@@ -119,5 +120,5 @@ class BaseStreamConsumer(ABC):
                     self._catch_up_mode = False
 
     @abstractmethod
-    async def process(self, msg_id: str, data: dict) -> None:
+    async def process(self, msg_id: str, data: dict[str, Any]) -> None:
         ...
