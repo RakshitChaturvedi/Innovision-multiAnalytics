@@ -2,10 +2,7 @@ import logging
 import asyncio
 import redis.asyncio as aioredis
 
-from typing import Any
 from abc import ABC, abstractmethod
-
-from shared.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +33,7 @@ class BaseStreamConsumer(ABC):
             2. create consumer group if not exists
             3. run loop
         """
+        from shared.config import settings
         self.redis = await aioredis.from_url(
             f"redis://{settings.REDIS_HOST}:{settings.REDIS_PORT}"
         )

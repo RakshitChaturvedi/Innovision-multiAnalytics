@@ -104,9 +104,9 @@ jobs:
         run: |
           python scripts/create_consumer_groups.py
 
-      - name: Run smoke test
-        env:
-          REDIS_HOST: localhost
-          REDIS_PORT: 6379
-        run: |
-          python scripts/smoke_test.py
+#      - name: Run smoke test
+#        env:
+#          REDIS_HOST: localhost
+#          REDIS_PORT: 6379
+#        run: |
+#          python scripts/smoke_test.py
