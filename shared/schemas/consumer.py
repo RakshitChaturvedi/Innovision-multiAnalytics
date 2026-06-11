@@ -15,14 +15,14 @@ class BaseStreamConsumer(ABC):
             stream_key: str,
             group_name: str,
             consumer_name: str,
-            batch_size: int,
-            block_ms: int, 
+            batch_size: int = 50,
+            block_ms: int = 100, 
     ):
-        self.stream_key = stream_key,
-        self.group_name = group_name,
-        self.consumer_name = consumer_name,
-        self.batch_size = batch_size,
-        self.block_ms = block_ms,
+        self.stream_key = stream_key
+        self.group_name = group_name
+        self.consumer_name = consumer_name
+        self.batch_size = batch_size
+        self.block_ms = block_ms
 
         self.redis: aioredis.Redis = None
         self._running = False
