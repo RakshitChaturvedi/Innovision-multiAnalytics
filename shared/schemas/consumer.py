@@ -102,6 +102,7 @@ class BaseStreamConsumer(ABC):
     async def _process_with_ack(self, msg_id: str, data: dict[str, Any]):
         try:
             await self.process(msg_id, data)
+            assert self.redis is not None
             await self.redis.xack(self.stream_key, self.group_name, msg_id)
         except Exception as e:
             logger.error(f"{self.consumer_name} failed on {msg_id}: {e}")
