@@ -1,5 +1,4 @@
 from unittest.mock import MagicMock, patch
-from datetime import timedelta
 
 from minio.error import S3Error
 
