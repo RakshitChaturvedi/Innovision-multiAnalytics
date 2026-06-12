@@ -58,7 +58,8 @@ jobs:
             pydantic \
             pydantic-settings \
             sqlalchemy \
-            redis
+            redis \
+            minio
 
       - name: Run shared tests
         env:
