@@ -1,6 +1,4 @@
-from __future__ import annotations
-
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import List, Optional, Tuple
 from uuid import UUID, uuid4
 
@@ -8,23 +6,15 @@ from pydantic import BaseModel, Field
 
 from shared.schemas.common import BoundingBox, TrackResult
 from shared.schemas.enums import (
-    AlertSeverity,
-    AlertStatus,
-    AlertType,
     CameraProfile,
-    DensityLevel,
     IdentityTag,
-    ZoneEventType,
+    AlertType,
+    AlertSeverity
 )
-
-
-def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
-
 
 class FrameEvent(BaseModel):
     event_id: UUID = Field(default_factory=uuid4)
-    camera_id: str = Field(..., description="Unique camera identifier")
+    camera_id: UUID
     camera_profile: CameraProfile
     frame_seq: int = Field(..., ge=0)
     frame_object_key: str
