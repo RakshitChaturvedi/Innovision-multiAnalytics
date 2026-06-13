@@ -9,14 +9,11 @@ Contract rules enforced here:
   - Presigned URL TTL: 1 hour for alert snapshots, 24 hours for reports.
   - Presigned URLs are generated on dashboard load if expired.
 """
-
-import io
 import os
 from datetime import timedelta
 
 from dotenv import load_dotenv
 from minio import Minio
-from minio.error import S3Error
 
 load_dotenv()
 

@@ -1,0 +1,90 @@
+name: CI
+
+on:
+  push:
+    branches: ["main", "dev"]
+  pull_request:
+    branches: ["main", "dev"]
+
+jobs:
+
+  # ── Lint & Type Check ───────────────────────────────────────────
+  lint-and-typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install lint tools
+        run: pip install ruff mypy
+
+      - name: Ruff lint
+        run: ruff check shared/ tests/
+
+      - name: Mypy type check
+        run: mypy shared/storage/minio_client.py --ignore-missing-imports
+
+  # ── Shared Tests (your task) ────────────────────────────────────
+  test-shared:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run shared tests
+        run: pytest tests/shared/ -v
+
+  # ── Smoke Test ──────────────────────────────────────────────────
+  smoke-test:
+    runs-on: ubuntu-latest
+
+    services:
+      minio:
+        image: quay.io/minio/minio
+        ports:
+          - 9000:9000
+          - 9001:9001
+        env:
+          MINIO_ROOT_USER: admin
+          MINIO_ROOT_PASSWORD: password123
+        options: >-
+          --health-cmd "curl -f http://localhost:9000/minio/health/live"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        # minio needs a command — run as sidecar
+      
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Wait for MinIO
+        run: |
+          for i in {1..10}; do
+            curl -sf http://localhost:9000/minio/health/live && break
+            echo "Waiting for MinIO... ($i)"
+            sleep 3
+          done
+
+      - name: Run integration tests
+        env:
+          MINIO_ENDPOINT: localhost:9000
+          MINIO_ACCESS_KEY: admin
+          MINIO_SECRET_KEY: password123
+          MINIO_SECURE: "false"
+        run: pytest tests/shared/ -v -m integration
