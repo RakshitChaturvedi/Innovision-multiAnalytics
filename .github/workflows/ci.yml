@@ -1,28 +1,6 @@
-test-shared:
-  runs-on: ubuntu-latest
-
-  steps:
-    - uses: actions/checkout@v4
-
-    - uses: actions/setup-python@v5
-      with:
-        python-version: "3.11"
-
-    - name: Install dependencies
-      run: |
-        pip install \
-          pytest \
-          pytest-asyncio \
-          pydantic \
-          pydantic-settings \
-          sqlalchemy \
-          redis \
-          minio \
-          python-dotenv
-
-    - name: Run shared tests
-      env:
-        REDIS_HOST: localhost
-        REDIS_PORT: 6379
-      run: |
-        pytest tests/shared/ -v -m "not integration"
+- name: Run shared tests
+  env:
+    REDIS_HOST: localhost
+    REDIS_PORT: 6379
+  run: |
+    pytest tests/shared/ -v -m "not integration"
