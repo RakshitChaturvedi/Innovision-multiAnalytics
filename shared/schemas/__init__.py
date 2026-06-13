@@ -4,16 +4,16 @@ from shared.schemas.enums import (
     AlertStatus,
     AlertType,
     CameraProfile,
-    CameraStatus,
-    DataCategory,
+    CrowdModel,
     DensityLevel,
-    FeedbackType,
+    EventType,
     IdentityTag,
-    ZoneEventType,
+    OperatorRole,
     ZoneType,
 )
 from shared.schemas.events import (
     AlertEvent,
+    CrowdFrameEvent,
     DetectionEvent,
     FrameEvent,
     RecognitionEvent,
@@ -21,22 +21,25 @@ from shared.schemas.events import (
 )
 
 __all__ = [
+    # enums
     "CameraProfile",
-    "CameraStatus",
     "IdentityTag",
     "AlertType",
     "AlertSeverity",
     "AlertStatus",
     "ZoneType",
-    "ZoneEventType",
+    "EventType",
+    "CrowdModel",
     "DensityLevel",
-    "FeedbackType",
-    "DataCategory",
+    "OperatorRole",
+    # common
     "BoundingBox",
     "TrackResult",
+    # events
     "FrameEvent",
     "DetectionEvent",
     "RecognitionEvent",
     "ZoneEvent",
+    "CrowdFrameEvent",
     "AlertEvent",
 ]
