@@ -179,24 +179,24 @@ def upgrade() -> None:
         # Auto-generated surrogate key — not supplied by AuditWriter.log()
         sa.Column(
             "id",
-            sa.BigInteger(),
+            UUID,
             primary_key=True,
-            autoincrement=True,
             nullable=False,
+            server_default=sa.text("gen_random_uuid()"),
             comment="Surrogate key, auto-generated, never supplied by application",
         ),
         # service — which microservice emitted this entry
         # e.g. "ingestion", "detection", "recognition", "event_processing", "api"
         sa.Column(
             "service",
-            sa.Text(),
+            sa.String(100),
             nullable=False,
             comment="Microservice name: ingestion | detection | recognition | event_processing | api",
         ),
         # action — what happened, e.g. "frame.ingested", "alert.raised", "person.enrolled"
         sa.Column(
             "action",
-            sa.Text(),
+            sa.String(100),
             nullable=False,
             comment="Domain action, dot-namespaced: <entity>.<verb>",
         ),
@@ -204,7 +204,7 @@ def upgrade() -> None:
         # Aligns with DataCategory enum values where applicable
         sa.Column(
             "entity_type",
-            sa.Text(),
+            sa.String(100),
             nullable=False,
             comment="Domain entity type, e.g. camera, person, alert, zone",
         ),
@@ -212,15 +212,15 @@ def upgrade() -> None:
         # even when the source value is a UUID or integer
         sa.Column(
             "entity_id",
-            sa.Text(),
-            nullable=True,
+            sa.String(255),
+            nullable=False,
             comment="String-cast primary key of the affected entity (UUID or int cast to TEXT)",
         ),
         # operator_id — UUID of the human/service that triggered the action;
         # NULL for fully automated pipeline events
         sa.Column(
             "operator_id",
-            sa.Text(),
+            sa.String(255),
             nullable=True,
             comment="String-cast UUID of the operator; NULL for automated pipeline events",
         ),
@@ -228,9 +228,9 @@ def upgrade() -> None:
         # writer.py passes a plain dict; psycopg2/asyncpg serialises it
         sa.Column(
             "metadata",
-            JSONB(),
-            nullable=True,
-            server_default=sa.text("'{}'::jsonb"),
+            JSONB,
+            nullable=False,
+            server_default="{}",
             comment="Arbitrary key-value context; JSONB for GIN-indexable queries",
         ),
         # timestamp — always UTC; writer supplies an explicit value,
@@ -239,7 +239,6 @@ def upgrade() -> None:
             "timestamp",
             sa.DateTime(timezone=True),
             nullable=False,
-            server_default=sa.text("now()"),
             comment="UTC timestamp of the event; supplied by writer, server default is a safety net",
         ),
         # Table-level comment
