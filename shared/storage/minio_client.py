@@ -9,6 +9,7 @@ Contract rules enforced here:
   - Presigned URL TTL: 1 hour for alert snapshots, 24 hours for reports.
   - Presigned URLs are generated on dashboard load if expired.
 """
+import io
 import os
 from datetime import timedelta
 
