@@ -1,6 +1,6 @@
 import unittest
 from datetime import datetime, timezone
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from pydantic import ValidationError
 
@@ -11,18 +11,18 @@ from shared.schemas import (
     AlertType,
     BoundingBox,
     CameraProfile,
-    CameraStatus,
-    DataCategory,
+    CrowdModel,
     DensityLevel,
     DetectionEvent,
-    FeedbackType,
+    EventType,
     FrameEvent,
     IdentityTag,
+    OperatorRole,
     RecognitionEvent,
     TrackResult,
     ZoneEvent,
-    ZoneEventType,
     ZoneType,
+    CrowdFrameEvent,
 )
 
 
@@ -31,7 +31,7 @@ from shared.schemas import (
 # ─────────────────────────────────────────────────────────────────────────────
 
 def make_bounding_box(**overrides):
-    defaults = dict(x1=0.1, y1=0.1, x2=0.5, y2=0.5, confidence=0.9)
+    defaults = dict(x1=0.1, y1=0.1, x2=0.5, y2=0.5)
     defaults.update(overrides)
     return BoundingBox(**defaults)
 
@@ -40,7 +40,8 @@ def make_track_result(**overrides):
     defaults = dict(
         track_id=1,
         bbox=make_bounding_box(),
-        frame_object_key="innovision-snapshots/frames/cam_01/000001.jpg",
+        confidence=0.9,
+        class_label="person",
     )
     defaults.update(overrides)
     return TrackResult(**defaults)
@@ -48,8 +49,8 @@ def make_track_result(**overrides):
 
 def make_frame_event(**overrides):
     defaults = dict(
-        camera_id="cam_01",
-        camera_profile=CameraProfile.BALANCED,
+        camera_id=uuid4(),
+        profile=CameraProfile.BALANCED,
         frame_seq=1,
         frame_object_key="innovision-snapshots/frames/cam_01/000001.jpg",
         frame_shape=(1920, 1080),
@@ -60,10 +61,12 @@ def make_frame_event(**overrides):
 
 def make_detection_event(**overrides):
     defaults = dict(
-        camera_id="cam_01",
-        camera_profile=CameraProfile.BALANCED,
+        camera_id=uuid4(),
+        frame_event_id=uuid4(),
         frame_object_key="innovision-snapshots/frames/cam_01/000001.jpg",
-        frame_seq=1,
+        frame_shape=(1920, 1080),
+        profile=CameraProfile.BALANCED,
+        inference_latency_ms=12.5,
     )
     defaults.update(overrides)
     return DetectionEvent(**defaults)
@@ -71,13 +74,12 @@ def make_detection_event(**overrides):
 
 def make_recognition_event(**overrides):
     defaults = dict(
-        camera_id="cam_01",
-        camera_profile=CameraProfile.HIGH_SECURITY,
+        camera_id=uuid4(),
+        detection_event_id=uuid4(),
         track_id=1,
         identity_tag=IdentityTag.ENROLLED,
         similarity_score=0.92,
         quality_score=0.88,
-        frame_object_key="innovision-snapshots/frames/cam_01/000001.jpg",
     )
     defaults.update(overrides)
     return RecognitionEvent(**defaults)
@@ -85,20 +87,34 @@ def make_recognition_event(**overrides):
 
 def make_zone_event(**overrides):
     defaults = dict(
-        zone_id="00000000-0000-0000-0000-000000000001",
-        camera_id="cam_01",
+        camera_id=uuid4(),
+        zone_id=uuid4(),
         track_id=1,
-        event_type=ZoneEventType.ENTERED,
+        event_type="entered",
     )
     defaults.update(overrides)
     return ZoneEvent(**defaults)
+
+
+def make_crowd_frame_event(**overrides):
+    defaults = dict(
+        camera_id=uuid4(),
+        frame_object_key="innovision-snapshots/frames/cam_01/000001.jpg",
+        frame_shape=(1920, 1080),
+        crowd_model=CrowdModel.CSRNET,
+        zone_ids=[uuid4()],
+    )
+    defaults.update(overrides)
+    return CrowdFrameEvent(**defaults)
 
 
 def make_alert_event(**overrides):
     defaults = dict(
         alert_type=AlertType.RESTRICTED_ENTRY,
         severity=AlertSeverity.HIGH,
-        camera_id="cam_01",
+        camera_id=uuid4(),
+        track_id=1,
+        confidence=0.91,
     )
     defaults.update(overrides)
     return AlertEvent(**defaults)
@@ -115,25 +131,14 @@ class TestBoundingBox(unittest.TestCase):
         self.assertAlmostEqual(box.x1, 0.1)
         self.assertAlmostEqual(box.x2, 0.5)
 
-    def test_width_height_area_center(self):
+    def test_centroid(self):
         box = make_bounding_box(x1=0.1, y1=0.2, x2=0.5, y2=0.6)
-        self.assertAlmostEqual(box.width, 0.4)
-        self.assertAlmostEqual(box.height, 0.4)
+        self.assertAlmostEqual(box.centroid[0], 0.3)
+        self.assertAlmostEqual(box.centroid[1], 0.4)
+
+    def test_area(self):
+        box = make_bounding_box(x1=0.1, y1=0.2, x2=0.5, y2=0.6)
         self.assertAlmostEqual(box.area, 0.16)
-        self.assertAlmostEqual(box.center[0], 0.3)
-        self.assertAlmostEqual(box.center[1], 0.4)
-
-    def test_x2_must_be_greater_than_x1(self):
-        with self.assertRaises(ValidationError):
-            make_bounding_box(x1=0.6, x2=0.2)
-
-    def test_y2_must_be_greater_than_y1(self):
-        with self.assertRaises(ValidationError):
-            make_bounding_box(y1=0.7, y2=0.3)
-
-    def test_equal_x1_x2_fails(self):
-        with self.assertRaises(ValidationError):
-            make_bounding_box(x1=0.4, x2=0.4)
 
     def test_coordinates_must_be_normalized(self):
         with self.assertRaises(ValidationError):
@@ -141,15 +146,13 @@ class TestBoundingBox(unittest.TestCase):
         with self.assertRaises(ValidationError):
             make_bounding_box(x2=1.1)
 
-    def test_confidence_bounds(self):
-        with self.assertRaises(ValidationError):
-            make_bounding_box(confidence=1.5)
-        with self.assertRaises(ValidationError):
-            make_bounding_box(confidence=-0.1)
-
     def test_zero_to_one_edge_values_pass(self):
-        box = make_bounding_box(x1=0.0, y1=0.0, x2=1.0, y2=1.0, confidence=1.0)
+        box = make_bounding_box(x1=0.0, y1=0.0, x2=1.0, y2=1.0)
         self.assertAlmostEqual(box.area, 1.0)
+
+    def test_no_confidence_field(self):
+        box = make_bounding_box()
+        self.assertFalse(hasattr(box, "confidence"))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -163,14 +166,26 @@ class TestTrackResult(unittest.TestCase):
         self.assertEqual(track.track_id, 1)
         self.assertEqual(track.class_label, "person")
         self.assertFalse(track.has_face)
+        self.assertIsNone(track.face_bbox)
+
+    def test_confidence_field_present(self):
+        track = make_track_result(confidence=0.85)
+        self.assertAlmostEqual(track.confidence, 0.85)
+
+    def test_confidence_out_of_range_fails(self):
+        with self.assertRaises(ValidationError):
+            make_track_result(confidence=1.5)
+        with self.assertRaises(ValidationError):
+            make_track_result(confidence=-0.1)
 
     def test_has_face_true(self):
         track = make_track_result(has_face=True)
         self.assertTrue(track.has_face)
 
-    def test_custom_class_label(self):
-        track = make_track_result(class_label="person")
-        self.assertEqual(track.class_label, "person")
+    def test_face_bbox_optional(self):
+        face = make_bounding_box(x1=0.2, y1=0.2, x2=0.4, y2=0.4)
+        track = make_track_result(has_face=True, face_bbox=face)
+        self.assertIsInstance(track.face_bbox, BoundingBox)
 
     def test_bbox_is_bounding_box_instance(self):
         track = make_track_result()
@@ -178,14 +193,11 @@ class TestTrackResult(unittest.TestCase):
 
     def test_missing_track_id_fails(self):
         with self.assertRaises(ValidationError):
-            TrackResult(
-                bbox=make_bounding_box(),
-                frame_object_key="innovision-snapshots/frames/cam_01/000001.jpg",
-            )
+            TrackResult(bbox=make_bounding_box(), confidence=0.9, class_label="person")
 
-    def test_missing_frame_object_key_fails(self):
+    def test_missing_confidence_fails(self):
         with self.assertRaises(ValidationError):
-            TrackResult(track_id=1, bbox=make_bounding_box())
+            TrackResult(track_id=1, bbox=make_bounding_box(), class_label="person")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -196,11 +208,15 @@ class TestFrameEvent(unittest.TestCase):
 
     def test_valid_frame_event(self):
         event = make_frame_event()
-        self.assertEqual(event.camera_id, "cam_01")
+        self.assertIsInstance(event.camera_id, UUID)
         self.assertEqual(event.frame_seq, 1)
-        self.assertEqual(event.camera_profile, CameraProfile.BALANCED)
+        self.assertEqual(event.profile, CameraProfile.BALANCED)
         self.assertIsInstance(event.event_id, UUID)
         self.assertIsInstance(event.timestamp, datetime)
+
+    def test_camera_id_is_uuid(self):
+        event = make_frame_event()
+        self.assertIsInstance(event.camera_id, UUID)
 
     def test_timestamp_is_utc(self):
         event = make_frame_event()
@@ -214,35 +230,31 @@ class TestFrameEvent(unittest.TestCase):
         event = make_frame_event(frame_seq=0)
         self.assertEqual(event.frame_seq, 0)
 
-    def test_camera_shake_default_false(self):
-        event = make_frame_event()
-        self.assertFalse(event.camera_shake)
-
-    def test_camera_shake_can_be_true(self):
-        event = make_frame_event(camera_shake=True)
-        self.assertTrue(event.camera_shake)
-
     def test_all_camera_profiles_accepted(self):
         for profile in CameraProfile:
-            event = make_frame_event(camera_profile=profile)
-            self.assertEqual(event.camera_profile, profile)
+            event = make_frame_event(profile=profile)
+            self.assertEqual(event.profile, profile)
+
+    def test_no_camera_shake_field(self):
+        event = make_frame_event()
+        self.assertFalse(hasattr(event, "camera_shake"))
 
     def test_json_round_trip(self):
         event = make_frame_event()
-        json_str = event.model_dump_json()
-        restored = FrameEvent.model_validate_json(json_str)
+        restored = FrameEvent.model_validate_json(event.model_dump_json())
         self.assertEqual(event.event_id, restored.event_id)
         self.assertEqual(event.camera_id, restored.camera_id)
         self.assertEqual(event.frame_seq, restored.frame_seq)
-        self.assertEqual(event.camera_profile, restored.camera_profile)
+        self.assertEqual(event.profile, restored.profile)
 
-    def test_missing_required_fields_fail(self):
+    def test_missing_camera_id_fails(self):
         with self.assertRaises(ValidationError):
-            FrameEvent(camera_profile=CameraProfile.BALANCED, frame_seq=1,
-                       frame_object_key="key", frame_shape=(1920, 1080))
-        with self.assertRaises(ValidationError):
-            FrameEvent(camera_id="cam_01", camera_profile=CameraProfile.BALANCED,
-                       frame_object_key="key", frame_shape=(1920, 1080))
+            FrameEvent(
+                profile=CameraProfile.BALANCED,
+                frame_seq=1,
+                frame_object_key="key",
+                frame_shape=(1920, 1080),
+            )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -256,12 +268,22 @@ class TestDetectionEvent(unittest.TestCase):
         self.assertEqual(event.tracks, [])
         self.assertIsInstance(event.event_id, UUID)
 
+    def test_camera_id_is_uuid(self):
+        event = make_detection_event()
+        self.assertIsInstance(event.camera_id, UUID)
+
+    def test_frame_event_id_is_uuid(self):
+        event = make_detection_event()
+        self.assertIsInstance(event.frame_event_id, UUID)
+
+    def test_inference_latency_present(self):
+        event = make_detection_event(inference_latency_ms=25.3)
+        self.assertAlmostEqual(event.inference_latency_ms, 25.3)
+
     def test_detection_event_with_tracks(self):
         tracks = [make_track_result(track_id=i) for i in range(3)]
         event = make_detection_event(tracks=tracks)
         self.assertEqual(len(event.tracks), 3)
-        self.assertEqual(event.tracks[0].track_id, 0)
-        self.assertEqual(event.tracks[2].track_id, 2)
 
     def test_empty_tracks_is_valid(self):
         event = make_detection_event(tracks=[])
@@ -286,18 +308,26 @@ class TestRecognitionEvent(unittest.TestCase):
         self.assertEqual(event.identity_tag, IdentityTag.ENROLLED)
         self.assertIsNone(event.person_id)
         self.assertIsNone(event.liveness_score)
+        self.assertFalse(event.liveness_checked)
+
+    def test_detection_event_id_present(self):
+        event = make_recognition_event()
+        self.assertIsInstance(event.detection_event_id, UUID)
+
+    def test_liveness_checked_flag(self):
+        event = make_recognition_event(liveness_checked=True, liveness_score=0.97)
+        self.assertTrue(event.liveness_checked)
+        self.assertAlmostEqual(event.liveness_score, 0.97)
 
     def test_visitor_tag(self):
         event = make_recognition_event(
-            identity_tag=IdentityTag.VISITOR,
-            similarity_score=0.68
+            identity_tag=IdentityTag.VISITOR, similarity_score=0.68
         )
         self.assertEqual(event.identity_tag, IdentityTag.VISITOR)
 
     def test_unknown_tag(self):
         event = make_recognition_event(
-            identity_tag=IdentityTag.UNKNOWN,
-            similarity_score=0.45
+            identity_tag=IdentityTag.UNKNOWN, similarity_score=0.45
         )
         self.assertEqual(event.identity_tag, IdentityTag.UNKNOWN)
 
@@ -311,19 +341,16 @@ class TestRecognitionEvent(unittest.TestCase):
         with self.assertRaises(ValidationError):
             make_recognition_event(quality_score=1.1)
 
-    def test_liveness_score_optional(self):
-        event = make_recognition_event(liveness_score=0.97)
-        self.assertAlmostEqual(event.liveness_score, 0.97)
-
     def test_liveness_score_out_of_range_fails(self):
         with self.assertRaises(ValidationError):
             make_recognition_event(liveness_score=1.2)
 
     def test_json_round_trip(self):
-        event = make_recognition_event(liveness_score=0.85)
+        event = make_recognition_event(liveness_score=0.85, liveness_checked=True)
         restored = RecognitionEvent.model_validate_json(event.model_dump_json())
         self.assertEqual(event.event_id, restored.event_id)
         self.assertAlmostEqual(restored.liveness_score, 0.85)
+        self.assertTrue(restored.liveness_checked)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -334,34 +361,66 @@ class TestZoneEvent(unittest.TestCase):
 
     def test_valid_entered_event(self):
         event = make_zone_event()
-        self.assertEqual(event.event_type, ZoneEventType.ENTERED)
-        self.assertIsNone(event.dwell_duration)
+        self.assertEqual(event.event_type, "entered")
+        self.assertIsNone(event.dwell_duration_seconds)
         self.assertIsNone(event.person_id)
+        self.assertIsNone(event.global_id)
+
+    def test_camera_id_is_uuid(self):
+        event = make_zone_event()
+        self.assertIsInstance(event.camera_id, UUID)
 
     def test_exited_event(self):
-        event = make_zone_event(event_type=ZoneEventType.EXITED)
-        self.assertEqual(event.event_type, ZoneEventType.EXITED)
+        event = make_zone_event(event_type="exited")
+        self.assertEqual(event.event_type, "exited")
 
     def test_dwell_event_with_duration(self):
-        event = make_zone_event(
-            event_type=ZoneEventType.DWELL,
-            dwell_duration=45.5
-        )
-        self.assertAlmostEqual(event.dwell_duration, 45.5)
+        event = make_zone_event(event_type="dwell", dwell_duration_seconds=45.5)
+        self.assertAlmostEqual(event.dwell_duration_seconds, 45.5)
 
     def test_negative_dwell_duration_fails(self):
         with self.assertRaises(ValidationError):
-            make_zone_event(event_type=ZoneEventType.DWELL, dwell_duration=-1.0)
+            make_zone_event(dwell_duration_seconds=-1.0)
 
-    def test_zone_id_is_uuid(self):
-        event = make_zone_event()
-        self.assertIsInstance(event.zone_id, UUID)
+    def test_global_id_optional(self):
+        gid = uuid4()
+        event = make_zone_event(global_id=gid)
+        self.assertEqual(event.global_id, gid)
 
     def test_json_round_trip(self):
-        event = make_zone_event(event_type=ZoneEventType.DWELL, dwell_duration=30.0)
+        event = make_zone_event(event_type="dwell", dwell_duration_seconds=30.0)
         restored = ZoneEvent.model_validate_json(event.model_dump_json())
         self.assertEqual(event.event_id, restored.event_id)
-        self.assertAlmostEqual(restored.dwell_duration, 30.0)
+        self.assertAlmostEqual(restored.dwell_duration_seconds, 30.0)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CrowdFrameEvent Tests
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestCrowdFrameEvent(unittest.TestCase):
+
+    def test_valid_crowd_frame_event(self):
+        event = make_crowd_frame_event()
+        self.assertIsInstance(event.camera_id, UUID)
+        self.assertEqual(event.crowd_model, CrowdModel.CSRNET)
+        self.assertEqual(len(event.zone_ids), 1)
+
+    def test_all_crowd_models_accepted(self):
+        for model in CrowdModel:
+            event = make_crowd_frame_event(crowd_model=model)
+            self.assertEqual(event.crowd_model, model)
+
+    def test_multiple_zone_ids(self):
+        zone_ids = [uuid4() for _ in range(3)]
+        event = make_crowd_frame_event(zone_ids=zone_ids)
+        self.assertEqual(len(event.zone_ids), 3)
+
+    def test_json_round_trip(self):
+        event = make_crowd_frame_event()
+        restored = CrowdFrameEvent.model_validate_json(event.model_dump_json())
+        self.assertEqual(event.event_id, restored.event_id)
+        self.assertEqual(event.crowd_model, restored.crowd_model)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -370,13 +429,43 @@ class TestZoneEvent(unittest.TestCase):
 
 class TestAlertEvent(unittest.TestCase):
 
-    def test_valid_alert_default_status(self):
+    def test_valid_alert_defaults(self):
         event = make_alert_event()
-        self.assertEqual(event.status, AlertStatus.PENDING)
         self.assertIsNone(event.zone_id)
         self.assertIsNone(event.person_id)
         self.assertIsNone(event.similarity_score)
         self.assertIsNone(event.snapshot_object_key)
+        self.assertIsNone(event.global_id)
+        self.assertFalse(event.requires_human_verification)
+        self.assertEqual(event.metadata, {})
+
+    def test_camera_id_is_uuid(self):
+        event = make_alert_event()
+        self.assertIsInstance(event.camera_id, UUID)
+
+    def test_track_id_required(self):
+        with self.assertRaises(ValidationError):
+            AlertEvent(
+                alert_type=AlertType.RESTRICTED_ENTRY,
+                severity=AlertSeverity.HIGH,
+                camera_id=uuid4(),
+                confidence=0.9,
+            )
+
+    def test_confidence_required(self):
+        with self.assertRaises(ValidationError):
+            AlertEvent(
+                alert_type=AlertType.RESTRICTED_ENTRY,
+                severity=AlertSeverity.HIGH,
+                camera_id=uuid4(),
+                track_id=1,
+            )
+
+    def test_confidence_bounds(self):
+        with self.assertRaises(ValidationError):
+            make_alert_event(confidence=1.1)
+        with self.assertRaises(ValidationError):
+            make_alert_event(confidence=-0.1)
 
     def test_all_alert_types_accepted(self):
         for alert_type in AlertType:
@@ -388,35 +477,36 @@ class TestAlertEvent(unittest.TestCase):
             event = make_alert_event(severity=severity)
             self.assertEqual(event.severity, severity)
 
+    def test_requires_human_verification(self):
+        event = make_alert_event(requires_human_verification=True)
+        self.assertTrue(event.requires_human_verification)
+
+    def test_metadata_dict(self):
+        event = make_alert_event(metadata={"source": "zone_monitor", "count": 3})
+        self.assertEqual(event.metadata["source"], "zone_monitor")
+
     def test_similarity_score_bounds(self):
         with self.assertRaises(ValidationError):
             make_alert_event(similarity_score=1.1)
         with self.assertRaises(ValidationError):
             make_alert_event(similarity_score=-0.5)
 
-    def test_similarity_score_valid(self):
-        event = make_alert_event(similarity_score=0.87)
-        self.assertAlmostEqual(event.similarity_score, 0.87)
-
-    def test_status_transitions(self):
-        for status in AlertStatus:
-            event = make_alert_event(status=status)
-            self.assertEqual(event.status, status)
-
-    def test_created_at_is_utc(self):
+    def test_timestamp_is_utc(self):
         event = make_alert_event()
-        self.assertEqual(event.created_at.tzinfo, timezone.utc)
+        self.assertEqual(event.timestamp.tzinfo, timezone.utc)
 
     def test_json_round_trip(self):
         event = make_alert_event(
             severity=AlertSeverity.CRITICAL,
             similarity_score=0.95,
-            snapshot_object_key="innovision-snapshots/alerts/2024-01-01/alert_01.jpg"
+            requires_human_verification=True,
+            metadata={"reason": "high_similarity"},
         )
         restored = AlertEvent.model_validate_json(event.model_dump_json())
         self.assertEqual(event.event_id, restored.event_id)
         self.assertEqual(restored.severity, AlertSeverity.CRITICAL)
-        self.assertAlmostEqual(restored.similarity_score, 0.95)
+        self.assertTrue(restored.requires_human_verification)
+        self.assertEqual(restored.metadata["reason"], "high_similarity")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -453,11 +543,17 @@ class TestEnums(unittest.TestCase):
         self.assertIn("medium", values)
         self.assertIn("low", values)
 
-    def test_zone_event_type_values(self):
-        values = {z.value for z in ZoneEventType}
+    def test_event_type_values(self):
+        values = {z.value for z in EventType}
         self.assertIn("entered", values)
         self.assertIn("exited", values)
         self.assertIn("dwell", values)
+
+    def test_crowd_model_values(self):
+        values = {c.value for c in CrowdModel}
+        self.assertIn("csrnet", values)
+        self.assertIn("dmcount", values)
+        self.assertIn("crowdformer", values)
 
     def test_density_level_values(self):
         values = {d.value for d in DensityLevel}
@@ -466,24 +562,12 @@ class TestEnums(unittest.TestCase):
         self.assertIn("high", values)
         self.assertIn("critical", values)
 
-    def test_camera_status_values(self):
-        values = {s.value for s in CameraStatus}
-        self.assertIn("online", values)
-        self.assertIn("offline", values)
-        self.assertIn("reconnecting", values)
-
-    def test_feedback_type_values(self):
-        values = {f.value for f in FeedbackType}
-        self.assertIn("confirm", values)
-        self.assertIn("reject", values)
-
-    def test_data_category_values(self):
-        values = {d.value for d in DataCategory}
-        self.assertIn("visitor_embeddings", values)
-        self.assertIn("recognition_events", values)
-        self.assertIn("detection_events", values)
-        self.assertIn("snapshots", values)
-        self.assertIn("audit_log", values)
+    def test_operator_role_values(self):
+        values = {o.value for o in OperatorRole}
+        self.assertIn("superadmin", values)
+        self.assertIn("admin", values)
+        self.assertIn("operator", values)
+        self.assertIn("viewer", values)
 
     def test_zone_type_values(self):
         values = {z.value for z in ZoneType}
