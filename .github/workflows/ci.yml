@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 name: CI
 
 on:
@@ -32,7 +33,8 @@ jobs:
             pydantic \
             pydantic-settings \
             sqlalchemy \
-            redis
+            redis \
+            minio
 
       - name: Ruff
         run: ruff check .
@@ -111,3 +113,11 @@ jobs:
 #          REDIS_PORT: 6379
 #        run: |
 #          python scripts/smoke_test.py
+=======
+- name: Run shared tests
+  env:
+    REDIS_HOST: localhost
+    REDIS_PORT: 6379
+  run: |
+    pytest tests/shared/ -v -m "not integration"
+>>>>>>> 98cb9fbabfcab6537d39545b37aa7d6d8ec3b420
