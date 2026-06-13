@@ -11,7 +11,6 @@ Requirements:
     - pip install pytest minio python-dotenv
 """
 
-import io
 import pytest
 from unittest.mock import MagicMock, patch
 from shared.storage import minio_client as mc
