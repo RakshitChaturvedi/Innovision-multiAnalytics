@@ -81,7 +81,7 @@ class AlertEvent(BaseModel):
     person_id: Optional[UUID] = None
     track_id: int
     global_id: Optional[UUID] = None
-    similarity_score: Optional[float] = None
+    similarity_score: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     snapshot_object_key: Optional[str] = None
     timestamp: datetime
     confidence: float = Field(ge=0.0, le=1.0)
