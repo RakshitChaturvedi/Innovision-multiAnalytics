@@ -7,7 +7,6 @@ from pydantic import ValidationError
 from shared.schemas import (
     AlertEvent,
     AlertSeverity,
-    AlertStatus,
     AlertType,
     BoundingBox,
     CameraProfile,

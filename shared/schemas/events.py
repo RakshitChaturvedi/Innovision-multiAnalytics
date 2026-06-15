@@ -4,7 +4,7 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field
 
-from shared.schemas.common import BoundingBox, TrackResult
+from shared.schemas.common import TrackResult
 from shared.schemas.enums import (
     AlertSeverity,
     AlertType,
