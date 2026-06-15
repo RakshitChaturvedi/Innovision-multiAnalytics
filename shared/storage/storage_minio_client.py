@@ -2,8 +2,6 @@ import os
 import logging
 
 from datetime import timedelta
-from typing import Optional
-
 from minio import Minio
 from minio.error import S3Error
 
