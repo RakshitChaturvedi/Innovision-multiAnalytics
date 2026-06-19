@@ -1,179 +1,230 @@
+import os
+from io import BytesIO
 from unittest.mock import MagicMock, patch
 
+import pytest
 from minio.error import S3Error
 
 from shared.storage.storage_minio_client import StorageClient
 
-# Verifies that the MinIO client is initialized with the provided configuration.
-@patch("shared.storage.storage_minio_client.Minio")
-def test_initialization_creates_client(mock_minio):
-    mock_client = MagicMock()
-    mock_minio.return_value = mock_client
 
-    mock_client.bucket_exists.return_value = True
+# ─────────────────────────────────────────────────────────────────────────────
+# Fixtures
+# ─────────────────────────────────────────────────────────────────────────────
 
-    StorageClient(
-        endpoint="localhost:9000",
-        access_key="admin",
-        secret_key="password",
-        secure=False,
-    )
+@pytest.fixture
+def mock_env(monkeypatch):
+    monkeypatch.setenv("MINIO_ENDPOINT", "localhost:9000")
+    monkeypatch.setenv("MINIO_ACCESS_KEY", "admin")
+    monkeypatch.setenv("MINIO_SECRET_KEY", "password123")
+    monkeypatch.setenv("MINIO_SECURE", "false")
 
-    mock_minio.assert_called_once_with(
-        "localhost:9000",
-        access_key="admin",
-        secret_key="password",
-        secure=False,
-    )
 
-# Verifies that required buckets are automatically created when they do not already exist.
-@patch("shared.storage.storage_minio_client.Minio")
-def test_initialization_creates_missing_buckets(mock_minio):
-    mock_client = MagicMock()
-    mock_minio.return_value = mock_client
+@pytest.fixture
+def mock_minio():
+    with patch("shared.storage.storage_minio_client.Minio") as mock_minio_cls:
+        mock_client = MagicMock()
+        mock_minio_cls.return_value = mock_client
+        yield mock_minio_cls, mock_client
 
-    mock_client.bucket_exists.return_value = False
 
-    StorageClient(
-        endpoint="localhost:9000",
-        access_key="admin",
-        secret_key="password",
-        secure=False,
-    )
+@pytest.fixture
+def storage(mock_env, mock_minio):
+    _, mock_client = mock_minio
+    return StorageClient()
 
-    assert mock_client.make_bucket.call_count == 3
 
-    mock_client.make_bucket.assert_any_call("snapshots")
-    mock_client.make_bucket.assert_any_call("reports")
-    mock_client.make_bucket.assert_any_call("clips")
+# ─────────────────────────────────────────────────────────────────────────────
+# Initialization Tests
+# ─────────────────────────────────────────────────────────────────────────────
 
-# Verifies that upload delegates file uploads to the MinIO SDK with the correct parameters.
-@patch("shared.storage.storage_minio_client.Minio")
-def test_upload(mock_minio):
-    mock_client = MagicMock()
-    mock_minio.return_value = mock_client
+class TestInitialization:
 
-    mock_client.bucket_exists.return_value = True
+    def test_creates_client_with_env_vars(self, mock_env, mock_minio):
+        mock_minio_cls, mock_client = mock_minio
 
-    storage = StorageClient(
-        endpoint="localhost:9000",
-        access_key="admin",
-        secret_key="password",
-    )
+        StorageClient()
 
-    storage.upload(
-        bucket_name="reports",
-        object_name="report.pdf",
-        file_path="/tmp/report.pdf",
-    )
+        mock_minio_cls.assert_called_once_with(
+            endpoint="localhost:9000",
+            access_key="admin",
+            secret_key="password123",
+            secure=False,
+        )
 
-    mock_client.fput_object.assert_called_once_with(
-        "reports",
-        "report.pdf",
-        "/tmp/report.pdf",
-    )
+    def test_secure_true_when_env_set(self, mock_minio, monkeypatch):
+        mock_minio_cls, mock_client = mock_minio
+        monkeypatch.setenv("MINIO_ENDPOINT", "localhost:9000")
+        monkeypatch.setenv("MINIO_ACCESS_KEY", "admin")
+        monkeypatch.setenv("MINIO_SECRET_KEY", "password123")
+        monkeypatch.setenv("MINIO_SECURE", "true")
 
-# Verifies that download delegates file retrieval to the MinIO SDK with the correct parameters.
-@patch("shared.storage.storage_minio_client.Minio")
-def test_download(mock_minio):
-    mock_client = MagicMock()
-    mock_minio.return_value = mock_client
+        StorageClient()
 
-    mock_client.bucket_exists.return_value = True
+        mock_minio_cls.assert_called_once_with(
+            endpoint="localhost:9000",
+            access_key="admin",
+            secret_key="password123",
+            secure=True,
+        )
 
-    storage = StorageClient(
-        endpoint="localhost:9000",
-        access_key="admin",
-        secret_key="password",
-    )
+    def test_missing_required_env_var_raises(self, mock_minio, monkeypatch):
+        monkeypatch.delenv("MINIO_ENDPOINT", raising=False)
+        monkeypatch.setenv("MINIO_ACCESS_KEY", "admin")
+        monkeypatch.setenv("MINIO_SECRET_KEY", "password123")
 
-    storage.download(
-        bucket_name="reports",
-        object_name="report.pdf",
-        file_path="/tmp/downloaded.pdf",
-    )
+        with pytest.raises(KeyError):
+            StorageClient()
 
-    mock_client.fget_object.assert_called_once_with(
-        "reports",
-        "report.pdf",
-        "/tmp/downloaded.pdf",
-    )
+    def test_buckets_list_set_correctly(self, storage):
+        assert storage.buckets == [
+            "innovision-snapshots",
+            "innovision-reports",
+            "innovision-clips",
+        ]
 
-# Verifies that a presigned URL is generated and returned correctly.
-@patch("shared.storage.storage_minio_client.Minio")
-def test_presigned_url(mock_minio):
-    mock_client = MagicMock()
-    mock_minio.return_value = mock_client
 
-    mock_client.bucket_exists.return_value = True
+# ─────────────────────────────────────────────────────────────────────────────
+# Upload Tests
+# ─────────────────────────────────────────────────────────────────────────────
 
-    expected_url = "https://example.com/report.pdf"
+class TestUpload:
 
-    mock_client.presigned_get_object.return_value = expected_url
+    def test_upload_calls_put_object(self, storage, mock_minio):
+        _, mock_client = mock_minio
+        data = b"hello world"
 
-    storage = StorageClient(
-        endpoint="localhost:9000",
-        access_key="admin",
-        secret_key="password",
-    )
+        result = storage.upload(
+            bucket_key=0,
+            object_key="frames/cam_01/000001.jpg",
+            data=data,
+            content_type="image/jpeg",
+        )
 
-    result = storage.presigned_url(
-        bucket_name="reports",
-        object_name="report.pdf",
-    )
+        mock_client.put_object.assert_called_once()
+        call_kwargs = mock_client.put_object.call_args.kwargs
+        assert call_kwargs["bucket_name"] == "innovision-snapshots"
+        assert call_kwargs["object_name"] == "frames/cam_01/000001.jpg"
+        assert call_kwargs["length"] == len(data)
+        assert call_kwargs["content_type"] == "image/jpeg"
+        assert isinstance(call_kwargs["data"], BytesIO)
 
-    assert result == expected_url
+    def test_upload_returns_object_key(self, storage, mock_minio):
+        result = storage.upload(
+            bucket_key=1,
+            object_key="reports/2026-06/rpt-001.pdf",
+            data=b"pdf bytes",
+        )
+        assert result == "reports/2026-06/rpt-001.pdf"
 
-    mock_client.presigned_get_object.assert_called_once()
+    def test_upload_default_content_type(self, storage, mock_minio):
+        _, mock_client = mock_minio
+        storage.upload(bucket_key=2, object_key="clips/cam_01/clip.mp4", data=b"data")
+        call_kwargs = mock_client.put_object.call_args.kwargs
+        assert call_kwargs["content_type"] == "application/octet-stream"
 
-# Verifies that object_exists returns True when the object is present in storage.
-@patch("shared.storage.storage_minio_client.Minio")
-def test_object_exists_true(mock_minio):
-    mock_client = MagicMock()
-    mock_minio.return_value = mock_client
+    def test_upload_invalid_bucket_key_raises(self, storage, mock_minio):
+        with pytest.raises(IndexError):
+            storage.upload(bucket_key=99, object_key="x.jpg", data=b"data")
 
-    mock_client.bucket_exists.return_value = True
 
-    storage = StorageClient(
-        endpoint="localhost:9000",
-        access_key="admin",
-        secret_key="password",
-    )
+# ─────────────────────────────────────────────────────────────────────────────
+# Download Tests
+# ─────────────────────────────────────────────────────────────────────────────
 
-    assert storage.object_exists(
-        "reports",
-        "report.pdf",
-    ) is True
+class TestDownload:
 
-    mock_client.stat_object.assert_called_once_with(
-        "reports",
-        "report.pdf",
-    )
+    def test_download_calls_get_object(self, storage, mock_minio):
+        _, mock_client = mock_minio
+        mock_response = MagicMock()
+        mock_response.read.return_value = b"file contents"
+        mock_client.get_object.return_value = mock_response
 
-# Verifies that object_exists returns False when the object cannot be found.
-@patch("shared.storage.storage_minio_client.Minio")
-def test_object_exists_false(mock_minio):
-    mock_client = MagicMock()
-    mock_minio.return_value = mock_client
+        result = storage.download(bucket_key=0, object_key="frames/cam_01/000001.jpg")
 
-    mock_client.bucket_exists.return_value = True
+        mock_client.get_object.assert_called_once_with(
+            "innovision-snapshots", "frames/cam_01/000001.jpg"
+        )
+        assert result == b"file contents"
 
-    mock_client.stat_object.side_effect = S3Error(
-        code="NoSuchKey",
-        message="Object not found",
-        resource="",
-        request_id="",
-        host_id="",
-        response={}
-    )
-    
-    storage = StorageClient(
-        endpoint="localhost:9000",
-        access_key="admin",
-        secret_key="password",
-    )
+    def test_download_invalid_bucket_key_raises(self, storage, mock_minio):
+        with pytest.raises(IndexError):
+            storage.download(bucket_key=99, object_key="x.jpg")
 
-    assert storage.object_exists(
-        "reports",
-        "missing.pdf",
-    ) is False
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Presigned URL Tests
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestPresignedUrl:
+
+    def test_presigned_url_returns_url(self, storage, mock_minio):
+        _, mock_client = mock_minio
+        expected_url = "https://example.com/report.pdf"
+        mock_client.presigned_get_object.return_value = expected_url
+
+        result = storage.presigned_url(bucket_key=1, object_key="report.pdf")
+
+        assert result == expected_url
+
+    def test_presigned_url_default_expiry_one_hour(self, storage, mock_minio):
+        from datetime import timedelta
+        _, mock_client = mock_minio
+
+        storage.presigned_url(bucket_key=1, object_key="report.pdf")
+
+        call_kwargs = mock_client.presigned_get_object.call_args.kwargs
+        assert call_kwargs["expires"] == timedelta(hours=1)
+
+    def test_presigned_url_custom_expiry(self, storage, mock_minio):
+        from datetime import timedelta
+        _, mock_client = mock_minio
+
+        storage.presigned_url(bucket_key=1, object_key="report.pdf", expires_hours=24)
+
+        call_kwargs = mock_client.presigned_get_object.call_args.kwargs
+        assert call_kwargs["expires"] == timedelta(hours=24)
+
+    def test_presigned_url_uses_correct_bucket_and_key(self, storage, mock_minio):
+        _, mock_client = mock_minio
+
+        storage.presigned_url(bucket_key=0, object_key="alerts/2026-06-12/abc.jpg")
+
+        call_kwargs = mock_client.presigned_get_object.call_args.kwargs
+        assert call_kwargs["bucket_name"] == "innovision-snapshots"
+        assert call_kwargs["object_name"] == "alerts/2026-06-12/abc.jpg"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Object Exists Tests
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestObjectExists:
+
+    def test_object_exists_true(self, storage, mock_minio):
+        _, mock_client = mock_minio
+        mock_client.stat_object.return_value = MagicMock()
+
+        result = storage.object_exists(bucket_key=1, object_key="report.pdf")
+
+        assert result is True
+        mock_client.stat_object.assert_called_once_with("innovision-reports", "report.pdf")
+
+    def test_object_exists_false_on_s3_error(self, storage, mock_minio):
+        _, mock_client = mock_minio
+        mock_client.stat_object.side_effect = S3Error(
+            code="NoSuchKey",
+            message="Object not found",
+            resource="",
+            request_id="",
+            host_id="",
+            response={},
+        )
+
+        result = storage.object_exists(bucket_key=1, object_key="missing.pdf")
+
+        assert result is False
+
+    def test_object_exists_invalid_bucket_key_raises(self, storage, mock_minio):
+        with pytest.raises(IndexError):
+            storage.object_exists(bucket_key=99, object_key="x.pdf")
