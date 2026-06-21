@@ -14,4 +14,5 @@ dependencies = [
     "redis>=8.0.0",
     "ruff>=0.15.16",
     "sqlalchemy>=2.0.50",
+    "minio>=7.2.0", # by Anish - for minio client
 ]
