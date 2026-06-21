@@ -71,4 +71,3 @@ class StorageClient:
         except S3Error:
             return False
         
-storage = StorageClient()
