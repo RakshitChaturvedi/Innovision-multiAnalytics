@@ -43,4 +43,5 @@ __all__ = [
     "ZoneEvent",
     "CrowdFrameEvent",
     "AlertEvent",
+    "FrameProvider"
 ]

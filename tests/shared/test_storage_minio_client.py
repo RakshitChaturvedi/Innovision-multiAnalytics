@@ -93,7 +93,7 @@ class TestUpload:
         _, mock_client = mock_minio
         data = b"hello world"
 
-        result = storage.upload(
+        storage.upload(
             bucket_key=0,
             object_key="frames/cam_01/000001.jpg",
             data=data,
