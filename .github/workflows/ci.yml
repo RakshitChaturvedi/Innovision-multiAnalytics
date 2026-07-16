@@ -94,3 +94,23 @@ jobs:
           REDIS_HOST: localhost
           REDIS_PORT: 6379
         run: uv run python -m scripts.smoke_test
+
+env:
+  REDIS_HOST: localhost
+  REDIS_PORT: 6379
+
+  POSTGRES_USER: test
+  POSTGRES_PASSWORD: test
+  DATABASE_URL: postgresql://test:test@localhost/test
+
+  MINIO_ENDPOINT: localhost:9000
+  MINIO_ACCESS_KEY: test
+  MINIO_SECRET_KEY: test
+  MINIO_SECURE: false
+
+  GRAFANA_PASSWORD: test
+
+  JWT_SECRET: test-secret
+  JWT_ALGORITHM: HS256
+  JWT_ACCESS_TOKEN_EXPIRE_MINUTES: 15
+  JWT_REFRESH_TOKEN_EXPIRE_DAYS: 7

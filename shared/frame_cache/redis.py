@@ -35,8 +35,10 @@ class RedisFrameCache(FrameCache):
     async def get(self, frame_reference: str) -> bytes | None:
         try:
             result = await self._redis.get(self._key(frame_reference))
-            if result is None: return None
-            if isinstance(result, bytes): return result
+            if result is None: 
+                return None
+            if isinstance(result, bytes): 
+                return result
             raise FrameCacheOperationError("Expected bytes from Redis Cache.")
         except Exception as exc:
             raise FrameCacheOperationError("Failed to retrieve frame from cache.") from exc
