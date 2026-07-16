@@ -10,6 +10,7 @@ from shared.schemas.enums import (
     IdentityTag,
     OperatorRole,
     ZoneType,
+    FrameProvider
 )
 from shared.schemas.events import (
     AlertEvent,
@@ -42,4 +43,5 @@ __all__ = [
     "ZoneEvent",
     "CrowdFrameEvent",
     "AlertEvent",
+    "FrameProvider"
 ]

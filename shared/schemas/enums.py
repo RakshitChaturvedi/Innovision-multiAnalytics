@@ -16,7 +16,6 @@ class AlertType(str, Enum):
     INTRUDER = "intruder"
     HEADCOUNT_BREACH = "headcount_breach"
     CROWD_DENSITY = "crowd_density"
-    PEDESTRIAN_ANOMALY = "pedestrian_anomaly"
 
 class AlertSeverity(str, Enum):
     CRITICAL = "critical"
@@ -55,3 +54,7 @@ class OperatorRole(str, Enum):
     ADMIN = "admin"
     OPERATOR = "operator"
     VIEWER = "viewer"
+
+class FrameProvider(str, Enum):
+    REDIS = "redis"
+    SHARED_MEMORY = "shared_memory"

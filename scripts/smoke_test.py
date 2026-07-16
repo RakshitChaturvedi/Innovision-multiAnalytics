@@ -6,7 +6,7 @@ from uuid import uuid4
 
 import redis.asyncio as aioredis
 
-from shared.schemas import CameraProfile, FrameEvent
+from shared.schemas import CameraProfile, FrameEvent, FrameProvider
 from shared.schemas.consumer import BaseStreamConsumer
 
 STREAM_NAME = "frames:test_camera"
@@ -47,10 +47,8 @@ async def run() -> None:
         camera_id=EXPECTED_CAMERA_ID,
         profile=EXPECTED_PROFILE,
         frame_seq=EXPECTED_FRAME_SEQ,
-        frame_object_key=(
-            f"{EXPECTED_KEY_PREFIX}/frames/"
-            f"{EXPECTED_CAMERA_ID}/{EXPECTED_FRAME_SEQ:06d}.jpg"
-        ),
+        frame_reference=str(uuid4()),
+        frame_provider=FrameProvider.REDIS,
         frame_shape=EXPECTED_FRAME_SHAPE,
         timestamp=datetime.now(timezone.utc),
     )
@@ -93,11 +91,6 @@ async def run() -> None:
     )
     print(f"[ASSERT]  frame_seq          OK  {received.frame_seq}")
 
-
-    assert received.frame_object_key.startswith(EXPECTED_KEY_PREFIX), (
-        f"FAIL — frame_object_key wrong prefix. Got '{received.frame_object_key}'"
-    )
-    print(f"[ASSERT]  frame_object_key   OK  {received.frame_object_key}")
 
     assert tuple(received.frame_shape) == EXPECTED_FRAME_SHAPE, (
         f"FAIL — frame_shape mismatch. Expected {EXPECTED_FRAME_SHAPE}, got {received.frame_shape}"
