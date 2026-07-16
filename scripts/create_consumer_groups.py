@@ -11,7 +11,6 @@ STREAMS = {
         "recognition_group",
         "zone_monitor_group",
         "headcount_group",
-        "pedestrian_group",
     ],
 
     "events:recognitions":[
@@ -19,7 +18,7 @@ STREAMS = {
         "intruder_group",
     ],
 
-    "events:zone":[
+    "events:zones":[
         "intruder_group",
     ],
 

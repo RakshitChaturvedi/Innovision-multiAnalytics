@@ -55,3 +55,7 @@ class OperatorRole(str, Enum):
     ADMIN = "admin"
     OPERATOR = "operator"
     VIEWER = "viewer"
+
+class FrameProvider(str, Enum):
+    REDIS = "redis"
+    SHARED_MEMORY = "shared_memory"

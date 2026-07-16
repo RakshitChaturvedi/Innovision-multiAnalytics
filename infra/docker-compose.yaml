@@ -112,8 +112,6 @@ services:
         condition: service_healthy
       postgres:
         condition: service_healthy
-      minio:
-        condition: service_healthy
     profiles: ["app"]
 
   detection:
@@ -127,8 +125,6 @@ services:
       redis:
         condition: service_healthy
       postgres:
-        condition: service_healthy
-      minio:
         condition: service_healthy
     profiles: ["app"]
     gpus: all
@@ -145,8 +141,6 @@ services:
         condition: service_healthy
       postgres:
         condition: service_healthy
-      minio:
-        condition: service_healthy
     profiles: ["app"]
     gpus: all
 
@@ -161,8 +155,6 @@ services:
       redis:
         condition: service_healthy
       postgres:
-        condition: service_healthy
-      minio:
         condition: service_healthy
     profiles: ["app"]
 

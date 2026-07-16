@@ -16,7 +16,7 @@ class AuditWriter:
             service: str,
             action: str,
             entity_type: str,
-            entity_id: int,
+            entity_id: str,
             operator_id: Optional[UUID] = None,
             metadata: Optional[dict] = None
     ) -> None:
@@ -36,7 +36,7 @@ class AuditWriter:
                 "service": service,
                 "action": action,
                 "entity_type": entity_type,
-                "entity_id": str(entity_id),
+                "entity_id": entity_id,
                 "operator_id": str(operator_id) if operator_id else None,
                 "metadata": metadata or {},
                 "timestamp": datetime.now(timezone.utc),
