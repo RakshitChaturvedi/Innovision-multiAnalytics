@@ -93,4 +93,4 @@ jobs:
         env:
           REDIS_HOST: localhost
           REDIS_PORT: 6379
-        run: uv run python scripts/smoke_test.py
+        run: uv run python -m scripts.smoke_test
