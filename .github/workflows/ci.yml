@@ -55,43 +55,42 @@ jobs:
           REDIS_PORT: 6379
         run: uv run pytest tests/shared/ -v
 
-#  smoke-test:
-#    runs-on: ubuntu-latest
-#
-#    services:
-#      redis:
-#        image: redis:7-alpine
-#
-#        ports:
-#          - 6379:6379
-#
-#        options: >-
-#          --health-cmd "redis-cli ping"
-#          --health-interval 5s
-#          --health-timeout 3s
-#          --health-retries 10
-#
-#    steps:
-#      - uses: actions/checkout@v4
-#
-#      - uses: actions/setup-python@v5
-#        with:
-#          python-version: "3.11"
-#
-#      - uses: astral-sh/setup-uv@v5
-#
-#      - name: Install dependencies
-#        run: uv sync --frozen
-#
-#      - name: Create consumer groups
-#        env:
-#          REDIS_HOST: localhost
-#          REDIS_PORT: 6379
-#        run: uv run python scripts/create_consumer_groups.py
-#
-#      - name: Run smoke test
-#        env:
-#          REDIS_HOST: localhost
-#          REDIS_PORT: 6379
-#        run: |
-#          python scripts/smoke_test.py
+  smoke-test:
+    runs-on: ubuntu-latest
+
+    services:
+      redis:
+        image: redis:7-alpine
+
+        ports:
+          - 6379:6379
+
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Create consumer groups
+        env:
+          REDIS_HOST: localhost
+          REDIS_PORT: 6379
+        run: uv run python scripts/create_consumer_groups.py
+
+      - name: Run smoke test
+        env:
+          REDIS_HOST: localhost
+          REDIS_PORT: 6379
+        run: uv run python scripts/smoke_test.py
