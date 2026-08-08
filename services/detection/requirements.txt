@@ -1,0 +1,8 @@
+ultralytics
+numpy
+opencv-python-headless
+redis
+sqlalchemy
+asyncpg
+pydantic
+pydantic-settings
