@@ -16,10 +16,8 @@ from dataclasses import dataclass
 
 from shared.schemas.common import BoundingBox
 
-from .config import settings
 from .face_estimator import FaceEstimator
 from .tracker import TrackedDetection
-
 
 # =============================================================
 # FILTERED TRACK
