@@ -1,0 +1,10 @@
+insightface==0.7.3
+onnxruntime==1.17.1
+opencv-python-headless==4.9.0.80
+numpy==1.26.3
+redis[hiredis]==5.0.1
+minio==7.2.5
+sqlalchemy[asyncio]==2.0.25
+asyncpg==0.29.0
+structlog==24.1.0
+pydantic==2.6.1
