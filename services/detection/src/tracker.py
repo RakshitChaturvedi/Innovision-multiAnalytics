@@ -1,12 +1,20 @@
 """
 Per-camera ByteTrack tracking.
 
-Important:
+Tracking is maintained separately for each camera because track IDs
+must persist independently per stream.
 
-CameraProfile has been completely removed.
+FIX
+---
+`BYTETracker.update()` does NOT accept a raw (N, 6) numpy array. The
+ultralytics implementation calls `results.conf`, `results.xywh`,
+`results.cls` and boolean-mask-indexes `results[mask]`. Passing an
+ndarray raised `AttributeError: 'numpy.ndarray' object has no
+attribute 'conf'` on the very first frame that contained a detection,
+so tracking never worked at all.
 
-Tracking is still maintained separately for each camera
-because track IDs must persist independently per stream.
+`_DetectionResults` below is a minimal Results-like adapter that
+satisfies that contract.
 """
 
 import logging
@@ -25,15 +33,96 @@ from .detector import RawDetection
 logger = logging.getLogger(__name__)
 
 
-_BYTETRACK_ARGS = SimpleNamespace(
-    track_high_thresh=0.5,
-    track_low_thresh=0.1,
-    new_track_thresh=0.6,
-    track_buffer=30,
-    match_thresh=0.8,
-    fuse_score=True,
-)
+def _bytetrack_args() -> SimpleNamespace:
+    return SimpleNamespace(
+        track_high_thresh=settings.track_high_thresh,
+        track_low_thresh=settings.track_low_thresh,
+        new_track_thresh=settings.new_track_thresh,
+        track_buffer=settings.track_buffer,
+        match_thresh=settings.match_thresh,
+        fuse_score=True,
+    )
 
+
+# =============================================================
+# RESULTS ADAPTER
+# =============================================================
+
+class _DetectionResults:
+    __slots__ = ("xyxy", "conf", "cls")
+
+    def __init__(
+        self,
+        xyxy: np.ndarray,
+        conf: np.ndarray,
+        cls: np.ndarray,
+    ) -> None:
+        self.xyxy = xyxy
+        self.conf = conf
+        self.cls = cls
+
+    @classmethod
+    def from_detections(
+        cls,
+        detections: list[RawDetection],
+    ) -> "_DetectionResults":
+
+        if not detections:
+            return cls(
+                np.zeros((0, 4), dtype=np.float32),
+                np.zeros((0,), dtype=np.float32),
+                np.zeros((0,), dtype=np.float32),
+            )
+
+        xyxy = np.array(
+            [[d.x1, d.y1, d.x2, d.y2] for d in detections],
+            dtype=np.float32,
+        )
+        conf = np.array(
+            [d.confidence for d in detections],
+            dtype=np.float32,
+        )
+        klass = np.array(
+            [d.class_id for d in detections],
+            dtype=np.float32,
+        )
+        return cls(xyxy, conf, klass)
+
+    @property
+    def xywh(self) -> np.ndarray:
+        if len(self.xyxy) == 0:
+            return np.zeros((0, 4), dtype=np.float32)
+
+        x1, y1, x2, y2 = (
+            self.xyxy[:, 0],
+            self.xyxy[:, 1],
+            self.xyxy[:, 2],
+            self.xyxy[:, 3],
+        )
+        return np.stack(
+            [
+                (x1 + x2) / 2.0,
+                (y1 + y2) / 2.0,
+                x2 - x1,
+                y2 - y1,
+            ],
+            axis=-1,
+        ).astype(np.float32)
+
+    def __len__(self) -> int:
+        return int(self.conf.shape[0])
+
+    def __getitem__(self, index) -> "_DetectionResults":
+        return _DetectionResults(
+            self.xyxy[index],
+            self.conf[index],
+            self.cls[index],
+        )
+
+
+# =============================================================
+# TRACKED DETECTION
+# =============================================================
 
 @dataclass
 class TrackedDetection:
@@ -53,34 +142,39 @@ class TrackedDetection:
     class_id: int
 
 
+# =============================================================
+# CAMERA TRACKER
+# =============================================================
+
 class CameraTracker:
     """
     ByteTrack wrapper for one camera.
-
-    Each camera gets its own instance.
-
-    Example:
-
-        camera-A -> CameraTracker A
-        camera-B -> CameraTracker B
-        camera-C -> CameraTracker C
-
-    They must not share tracker state.
     """
 
     def __init__(
         self,
         camera_id: str,
+        frame_rate: int | None = None,
     ) -> None:
 
         self.camera_id = camera_id
 
+        self.frame_rate = (
+            frame_rate
+            if frame_rate is not None
+            else settings.tracker_frame_rate
+        )
+
         self._tracker = self._create()
 
         logger.info(
-            "camera_tracker_created camera_id=%s",
+            "camera_tracker_created camera_id=%s algorithm=%s fps=%d",
             camera_id,
-        ) 
+            self._algorithm,
+            self.frame_rate,
+        )
+
+    # ---------------------------------------------------------
 
     def update(
         self,
@@ -88,85 +182,57 @@ class CameraTracker:
         frame: np.ndarray,
     ) -> list[TrackedDetection]:
         """
-        Update ByteTrack with detections from one frame.
+        Update the tracker with detections from one frame.
+
+        Empty frames are still fed to the tracker so that Kalman
+        prediction and track ageing stay in sync with wall time.
         """
 
-        if not detections:
+        results = _DetectionResults.from_detections(detections)
 
-            empty = np.zeros(
-                (0, 6),
-                dtype=np.float32,
+        try:
+            tracks = self._tracker.update(results, frame)
+
+        except Exception as exc:
+            # A tracker blow-up must not take the whole worker down.
+            logger.exception(
+                "tracker_update_failed camera_id=%s detections=%d error=%s",
+                self.camera_id,
+                len(detections),
+                exc,
             )
-
-            self._tracker.update(
-                empty,
-                frame,
-            )
-
+            self.reset()
             return []
 
-
-        detection_array = np.array(
-            [
-                [
-                    detection.x1,
-                    detection.y1,
-                    detection.x2,
-                    detection.y2,
-                    detection.confidence,
-                    detection.class_id,
-                ]
-                for detection in detections
-            ],
-            dtype=np.float32,
-        )
-
-        tracks = self._tracker.update(
-            detection_array,
-            frame,
-        )
-
-        if tracks is None:
+        if tracks is None or len(tracks) == 0:
             return []
 
-        if len(tracks) == 0:
-            return []
-
-        tracked: list[
-            TrackedDetection
-        ] = []
+        tracked: list[TrackedDetection] = []
 
         for track in tracks:
 
             if len(track) < 5:
                 continue
 
-            x1 = float(track[0])
-            y1 = float(track[1])
-            x2 = float(track[2])
-            y2 = float(track[3])
+            confidence = (
+                float(track[5])
+                if len(track) > 5
+                else settings.detection_confidence
+            )
 
-            track_id = int(track[4])
-
-            if len(track) > 5:
-                confidence = float(track[5])
-            else:
-                confidence = (
-                    settings.detection_confidence
-                )
-
-            if len(track) > 6:
-                class_id = int(track[6])
-            else:
-                class_id = 0
+            class_id = (
+                int(track[6])
+                if len(track) > 6
+                else 0
+            )
 
             tracked.append(
                 TrackedDetection(
-                    track_id=track_id,
-                    x1=x1,
-                    y1=y1,
-                    x2=x2,
-                    y2=y2,
+                    track_id=int(track[4]),
+                    x1=float(track[0]),
+                    y1=float(track[1]),
+                    x2=float(track[2]),
+                    y2=float(track[3]),
                     confidence=confidence,
                     class_id=class_id,
                 )
@@ -174,12 +240,11 @@ class CameraTracker:
 
         return tracked
 
+    # ---------------------------------------------------------
 
     def reset(self) -> None:
         """
-        Reset tracker state.
-
-        Useful after a long camera stream interruption.
+        Reset tracker state, e.g. after a stream interruption.
         """
 
         self._tracker = self._create()
@@ -189,84 +254,52 @@ class CameraTracker:
             self.camera_id,
         )
 
-    def switch_to_botsort(self) -> None:
-        """
-        Placeholder for future BoT-SORT support.
+    # ---------------------------------------------------------
+    def _create(self):
 
-        CameraProfile is NOT involved.
-
-        A camera shake event can trigger this in a future
-        implementation.
-        """
-
-        logger.warning(
-            "tracker_switch_botsort_requested "
-            "camera_id=%s "
-            "feature_not_implemented",
-            self.camera_id,
-        )
+        args = _bytetrack_args()
+        return BYTETracker(args, frame_rate=self.frame_rate)
 
 
-    @staticmethod
-    def _create() -> BYTETracker:
-
-        return BYTETracker(
-            _BYTETRACK_ARGS,
-            frame_rate=10,
-        )
-
+# =============================================================
+# TRACKER MANAGER
+# =============================================================
 
 class TrackerManager:
     """
-    Registry of CameraTracker instances.
-
-    One tracker per camera.
-
-    There is NO CameraProfile.
+    Registry of CameraTracker instances, one per camera.
     """
 
     def __init__(self) -> None:
 
-        self._trackers: dict[
-            str,
-            CameraTracker,
-        ] = {}
+        self._trackers: dict[str, CameraTracker] = {}
 
-    def get(
-        self,
-        camera_id: str,
-    ) -> CameraTracker:
+    def get(self, camera_id: str) -> CameraTracker:
 
-        if camera_id not in self._trackers:
+        tracker = self._trackers.get(camera_id)
 
-            self._trackers[camera_id] = (
-                CameraTracker(
-                    camera_id
-                )
-            )
+        if tracker is None:
+            tracker = CameraTracker(camera_id)
+            self._trackers[camera_id] = tracker
 
-        return self._trackers[camera_id]
-    def reset(
-        self,
-        camera_id: str,
-    ) -> None:
+        return tracker
 
-        tracker = self._trackers.get(
-            camera_id
-        )
+    def reset(self, camera_id: str) -> None:
+
+        tracker = self._trackers.get(camera_id)
 
         if tracker is not None:
-
             tracker.reset()
-    def on_shake(
-        self,
-        camera_id: str,
-    ) -> None:
 
-        tracker = self._trackers.get(
-            camera_id
-        )
+    def drop(self, camera_id: str) -> None:
+        """
+        Release tracker state for a camera that is no longer streaming.
 
-        if tracker is not None:
+        Without this, `_trackers` grows unbounded in a long-running
+        worker that sees churn in the camera fleet.
+        """
 
-            tracker.switch_to_botsort()
+        self._trackers.pop(camera_id, None)
+
+    def camera_ids(self) -> list[str]:
+        return list(self._trackers)

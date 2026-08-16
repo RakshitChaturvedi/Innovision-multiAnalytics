@@ -115,8 +115,10 @@ class YOLODetector:
             conf=settings.detection_confidence,
             iou=settings.detection_iou,
 
-            # COCO class 0 = person
-            classes=[0],
+            # COCO class 0 = person (configurable)
+            classes=settings.detection_classes,
+
+            imgsz=settings.detection_imgsz,
 
             verbose=False,
         )
@@ -132,6 +134,15 @@ class YOLODetector:
         detections_per_frame: list[
             list[RawDetection]
         ] = []
+
+        # ultralytics returns one Results object per input frame, in
+        # input order. Assert it so a version change fails loudly here
+        # rather than silently attaching detections to the wrong frame.
+        if len(results) != len(frames):
+            raise RuntimeError(
+                f"yolo returned {len(results)} results "
+                f"for {len(frames)} frames"
+            )
 
         for result in results:
 
@@ -152,14 +163,19 @@ class YOLODetector:
 
                 for box in boxes:
 
+                    # FIX: unpacking assumed exactly 6 columns. When
+                    # the model is run with tracking enabled ultralytics
+                    # emits a 7th track-id column, which raised
+                    # "too many values to unpack".
                     (
                         x1,
                         y1,
                         x2,
                         y2,
-                        confidence,
-                        class_id,
-                    ) = box
+                    ) = box[:4]
+
+                    confidence = box[-2]
+                    class_id = box[-1]
 
                     frame_detections.append(
                         RawDetection(

@@ -1,59 +1,47 @@
+# NOTE: build context must be the REPOSITORY ROOT, not services/detection:
+#   docker build -f services/detection/Dockerfile -t innovision-detection .
+#
+# FIX: the previous Dockerfile only copied `src` and `main.py`. Every
+# module imports `shared.*`, so the image built successfully and then
+# crashed with ModuleNotFoundError on first start.
+
 FROM python:3.12-slim
 
-# Prevent Python from creating .pyc files
-# and make logs appear immediately.
-ENV PYTHONDONTWRITEBYTECODE=1
-ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
 
-# ------------------------------------------------------------
-# System dependencies
-# ------------------------------------------------------------
-
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     libglib2.0-0 \
     libgl1 \
     libsm6 \
     libxext6 \
     libxrender1 \
     ffmpeg \
+    curl \
     && rm -rf /var/lib/apt/lists/*
-
-# ------------------------------------------------------------
-# Working directory
-# ------------------------------------------------------------
 
 WORKDIR /app
 
-# ------------------------------------------------------------
-# Python dependencies
-# ------------------------------------------------------------
+COPY services/detection/requirements.txt ./requirements.txt
 
-COPY requirements.txt .
+RUN pip install --upgrade pip \
+    && pip install -r requirements.txt
 
-RUN pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir -r requirements.txt
+# Application code
+COPY services/detection/src ./src
+COPY services/detection/main.py ./main.py
 
-# ------------------------------------------------------------
-# Application
-# ------------------------------------------------------------
+# Shared library — required, previously missing
+COPY shared ./shared
 
-COPY src ./src
-COPY main.py .
+RUN mkdir -p /models/detection \
+    && useradd --create-home --uid 10001 appuser \
+    && chown -R appuser:appuser /app /models
 
-# ------------------------------------------------------------
-# YOLO model directory
-# ------------------------------------------------------------
+USER appuser
 
-RUN mkdir -p /models/detection
-
-# ------------------------------------------------------------
-# Python path
-# ------------------------------------------------------------
-
-ENV PYTHONPATH=/app
-
-# ------------------------------------------------------------
-# Start detection service
-# ------------------------------------------------------------
+ENV PYTHONPATH=/app \
+    YOLO_CONFIG_DIR=/tmp/ultralytics
 
 CMD ["python", "main.py"]

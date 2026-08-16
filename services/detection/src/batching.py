@@ -32,7 +32,8 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from shared.schemas.contracts import FrameEvent
+# FIX: shared.schemas.contracts does not exist; the module is events.
+from shared.schemas.events import FrameEvent
 
 
 logger = logging.getLogger(__name__)
@@ -51,6 +52,10 @@ class FrameItem:
     frame_event: FrameEvent
 
     frame: np.ndarray
+
+    # Redis Stream message id. Carried through the batch so the ACK
+    # can be deferred until the frame has actually been published.
+    msg_id: str | bytes | None = None
 
     enqueued_at: float = field(
         default_factory=time.monotonic
@@ -101,6 +106,7 @@ class BatchManager:
         self,
         batch_size: int = 8,
         batch_timeout_ms: int = 100,
+        max_pending_batches: int = 4,
     ) -> None:
 
         self.batch_size = batch_size
@@ -121,9 +127,15 @@ class BatchManager:
         # READY QUEUE
         # -----------------------------------------------------
 
+        # FIX: the queue was unbounded. If inference fell behind the
+        # ingest rate, decoded frames accumulated in RAM until the
+        # worker was OOM-killed. A bounded queue pushes back on the
+        # Redis consumer instead.
         self._ready_queue: asyncio.Queue[
             BatchReadyEvent
-        ] = asyncio.Queue()
+        ] = asyncio.Queue(
+            maxsize=max_pending_batches
+        )
 
         # -----------------------------------------------------
         # LOCK
@@ -218,6 +230,16 @@ class BatchManager:
         )
 
     # =========================================================
+    # DEPTH (for metrics / backpressure reporting)
+    # =========================================================
+
+    def pending_batches(self) -> int:
+        return self._ready_queue.qsize()
+
+    def buffered_frames(self) -> int:
+        return len(self._items)
+
+    # =========================================================
     # FLUSH
     # =========================================================
 
@@ -234,6 +256,10 @@ class BatchManager:
             items=items
         )
 
+        # NOTE: _flush is always called with self._lock held. put()
+        # can block when the queue is full, which is intentional
+        # backpressure, and safe here because the batch processor
+        # never acquires this lock.
         await self._ready_queue.put(
             batch
         )
@@ -256,8 +282,11 @@ class BatchManager:
             / 1000
         )
 
-        check_interval = (
-            timeout_seconds / 2
+        # FIX: a small batch_timeout_ms produced a near-zero sleep and
+        # a hot loop that burned a core; clamp it.
+        check_interval = max(
+            timeout_seconds / 2,
+            0.005,
         )
 
         while True:
