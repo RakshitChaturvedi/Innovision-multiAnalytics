@@ -33,7 +33,7 @@ from .detector import RawDetection
 logger = logging.getLogger(__name__)
 
 
-def _bytetrack_args() -> SimpleNamespace:
+def _bytetrack_args(frame_rate: int | None = None) -> SimpleNamespace:
     return SimpleNamespace(
         track_high_thresh=settings.track_high_thresh,
         track_low_thresh=settings.track_low_thresh,
@@ -41,6 +41,11 @@ def _bytetrack_args() -> SimpleNamespace:
         track_buffer=settings.track_buffer,
         match_thresh=settings.match_thresh,
         fuse_score=True,
+        frame_rate=(
+            frame_rate
+            if frame_rate is not None
+            else settings.tracker_frame_rate
+        ),
     )
 
 
@@ -165,6 +170,7 @@ class CameraTracker:
             else settings.tracker_frame_rate
         )
 
+        self._algorithm = "bytetrack"
         self._tracker = self._create()
 
         logger.info(
@@ -257,8 +263,8 @@ class CameraTracker:
     # ---------------------------------------------------------
     def _create(self):
 
-        args = _bytetrack_args()
-        return BYTETracker(args, frame_rate=self.frame_rate)
+        args = _bytetrack_args(frame_rate=self.frame_rate)
+        return BYTETracker(args)
 
 
 # =============================================================

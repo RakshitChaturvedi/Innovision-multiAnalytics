@@ -90,9 +90,6 @@ class DetectionConsumer(BaseStreamConsumer):
             stream_key=stream_key,
             group_name=settings.consumer_group,
             consumer_name=settings.consumer_name,
-            # The ACK is issued after the frame has been published,
-            # not when it is queued for inference.
-            manual_ack=True,
         )
 
         self._model_loader = ModelLoader()
@@ -190,14 +187,10 @@ class DetectionConsumer(BaseStreamConsumer):
         # Drain what is already buffered before tearing down.
         await self._batch_manager.stop()
 
-        for task in (
-            self._batch_processor_task):
-            if task is None:
-                continue
-
-            task.cancel()
+        if self._batch_processor_task is not None:
+            self._batch_processor_task.cancel()
             try:
-                await task
+                await self._batch_processor_task
             except (asyncio.CancelledError, Exception):
                 pass
 
@@ -212,6 +205,32 @@ class DetectionConsumer(BaseStreamConsumer):
         await self._engine.dispose()
 
         logger.info("detection_consumer_stopped")
+
+    # =========================================================
+    # ACKNOWLEDGEMENT & STREAM PROCESSING
+    # =========================================================
+
+    async def _process_with_ack(self, msg_id: str, data: dict) -> None:
+        """
+        Override BaseStreamConsumer._process_with_ack.
+
+        Do NOT auto-ack here: frames are enqueued to the BatchManager
+        and must only be acked after batch inference, tracking,
+        publishing, and database persistence have completed.
+        """
+        try:
+            await self.process(msg_id, data)
+        except Exception as e:
+            logger.error(f"{self.consumer_name} failed on {msg_id}: {e}")
+
+    async def ack(self, msg_id: str | bytes) -> None:
+        """
+        Explicitly acknowledge a processed message in Redis.
+        """
+        if self.redis is not None:
+            await self.redis.xack(self.stream_key, self.group_name, msg_id)
+        elif self._side_redis is not None:
+            await self._side_redis.xack(self.stream_key, self.group_name, msg_id)
 
     # =========================================================
     # PROCESS REDIS MESSAGE
@@ -466,10 +485,7 @@ class DetectionConsumer(BaseStreamConsumer):
         real-time detection pipeline.
         """
 
-        if frame_event.frame_provider not in (
-            FrameProvider.CACHE,
-            FrameProvider.REDIS,
-        ):
+        if frame_event.frame_provider != FrameProvider.REDIS:
             raise RuntimeError(
                 f"Unsupported frame provider for detection: "
                 f"{frame_event.frame_provider}"
@@ -480,15 +496,17 @@ class DetectionConsumer(BaseStreamConsumer):
                 "Redis connection is not initialized."
             )
 
+        ref = frame_event.frame_reference
+        key = ref if ref.startswith("frames:") else f"frames:{ref}"
+
         try:
-            data = await self._side_redis.get(
-                frame_event.frame_reference
-            )
+            data = await self._side_redis.get(key)
 
         except Exception as exc:
             logger.error(
-                "redis_frame_fetch_failed reference=%s error=%s",
+                "redis_frame_fetch_failed reference=%s key=%s error=%s",
                 frame_event.frame_reference,
+                key,
                 exc,
             )
             raise
@@ -496,7 +514,7 @@ class DetectionConsumer(BaseStreamConsumer):
         if data is None:
             raise RuntimeError(
                 f"Frame not found in Redis cache: "
-                f"{frame_event.frame_reference}"
+                f"{key}"
             )
 
         return data

@@ -92,10 +92,6 @@ def build_detection_event(
             frame_event.frame_shape
         ),
 
-        frame_provider=(
-            frame_event.frame_provider
-        ),
-
         profile=frame_event.profile,
 
         tracks=[
