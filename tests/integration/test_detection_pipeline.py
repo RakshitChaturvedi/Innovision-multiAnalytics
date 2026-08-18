@@ -1,17 +1,15 @@
-import asyncio
-import json
 import unittest
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import cv2
 import numpy as np
 
-from shared.schemas.enums import CameraProfile, FrameProvider
-from shared.schemas.events import DetectionEvent, FrameEvent
 from services.detection.src.consumer import DetectionConsumer
 from services.detection.src.detector import RawDetection
+from shared.schemas.enums import CameraProfile, FrameProvider
+from shared.schemas.events import FrameEvent
 
 
 class TestDetectionPipelineIntegration(unittest.IsolatedAsyncioTestCase):
@@ -40,7 +38,7 @@ class TestDetectionPipelineIntegration(unittest.IsolatedAsyncioTestCase):
         # 2. Build the incoming FrameEvent
         frame_event = FrameEvent(
             camera_id=camera_id,
-            timestamp=datetime.now(timezone.utc),
+            timestamp=datetime.now(UTC),
             frame_seq=1,
             frame_reference=frame_ref,
             frame_provider=FrameProvider.REDIS,

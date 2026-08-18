@@ -27,14 +27,12 @@ Example:
 import asyncio
 import logging
 import time
-
 from dataclasses import dataclass, field
 
 import numpy as np
 
 # FIX: shared.schemas.contracts does not exist; the module is events.
 from shared.schemas.events import FrameEvent
-
 
 logger = logging.getLogger(__name__)
 

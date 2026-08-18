@@ -11,7 +11,6 @@ from ultralytics import YOLO
 
 from .config import settings
 
-
 logger = logging.getLogger(__name__)
 
 

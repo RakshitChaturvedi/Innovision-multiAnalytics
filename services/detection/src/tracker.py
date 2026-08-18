@@ -18,17 +18,14 @@ satisfies that contract.
 """
 
 import logging
-
 from dataclasses import dataclass
 from types import SimpleNamespace
 
 import numpy as np
-
 from ultralytics.trackers import BYTETracker
 
 from .config import settings
 from .detector import RawDetection
-
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +51,7 @@ def _bytetrack_args(frame_rate: int | None = None) -> SimpleNamespace:
 # =============================================================
 
 class _DetectionResults:
-    __slots__ = ("xyxy", "conf", "cls")
+    __slots__ = ("cls", "conf", "xyxy")
 
     def __init__(
         self,

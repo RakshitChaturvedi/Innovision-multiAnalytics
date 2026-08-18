@@ -1,22 +1,22 @@
 import asyncio
-import json
 import unittest
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
-import numpy as np
-
-from shared.schemas.common import BoundingBox, TrackResult
-from shared.schemas.enums import CameraProfile, FrameProvider
-from shared.schemas.events import DetectionEvent, FrameEvent
-from services.detection.src.batching import BatchManager, FrameItem
 from services.detection.src.config import settings
 from services.detection.src.detector import RawDetection
 from services.detection.src.face_estimator import FaceEstimator
 from services.detection.src.filtering import DetectionFilter, FilteredTrack
-from services.detection.src.publisher import build_detection_event, build_track_result
-from services.detection.src.tracker import CameraTracker, TrackerManager, _DetectionResults
+from services.detection.src.publisher import build_detection_event
+from services.detection.src.tracker import (
+    CameraTracker,
+    TrackerManager,
+    _DetectionResults,
+)
+from shared.schemas.common import BoundingBox, TrackResult
+from shared.schemas.enums import CameraProfile, FrameProvider
+from shared.schemas.events import DetectionEvent, FrameEvent
 
 
 class TestTracker(unittest.TestCase):
@@ -98,7 +98,7 @@ class TestPublisher(unittest.TestCase):
     def test_build_detection_event(self):
         frame_event = FrameEvent(
             camera_id=uuid4(),
-            timestamp=datetime.now(timezone.utc),
+            timestamp=datetime.now(UTC),
             frame_seq=1,
             frame_reference="frame-001",
             frame_provider=FrameProvider.REDIS,
@@ -174,7 +174,7 @@ class TestDetectionConsumer(unittest.IsolatedAsyncioTestCase):
 
         event = FrameEvent(
             camera_id=uuid4(),
-            timestamp=datetime.now(timezone.utc),
+            timestamp=datetime.now(UTC),
             frame_seq=1,
             frame_reference="uuid-frame-123",
             frame_provider=FrameProvider.REDIS,

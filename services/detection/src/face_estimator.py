@@ -16,7 +16,6 @@ No CameraProfile is used here.
 
 from dataclasses import dataclass
 
-
 # =============================================================
 # FACE ESTIMATE
 # =============================================================

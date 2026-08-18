@@ -16,7 +16,6 @@ import sys
 from src.config import settings
 from src.consumer import DetectionConsumer
 
-
 logging.basicConfig(
     level=getattr(logging, settings.log_level.upper(), logging.INFO),
     format=(

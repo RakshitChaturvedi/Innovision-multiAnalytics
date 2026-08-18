@@ -22,15 +22,12 @@ YOLOv11m is used for every camera.
 
 import logging
 import time
-
 from dataclasses import dataclass
 
 import numpy as np
-
 from ultralytics import YOLO
 
 from .config import settings
-
 
 logger = logging.getLogger(__name__)
 

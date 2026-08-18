@@ -15,12 +15,12 @@ import logging
 import redis.asyncio as aioredis
 
 from shared.schemas.common import TrackResult
+
 # FIX: shared.schemas.contracts does not exist; the module is events.
 from shared.schemas.events import DetectionEvent, FrameEvent
 
 from .config import settings
 from .filtering import FilteredTrack
-
 
 logger = logging.getLogger(__name__)
 

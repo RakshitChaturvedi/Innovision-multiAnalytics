@@ -16,7 +16,6 @@ import uuid
 import cv2
 import numpy as np
 import redis.asyncio as aioredis
-
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
@@ -24,8 +23,8 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from shared.schemas.consumer import BaseStreamConsumer
-from shared.schemas.events import FrameEvent
 from shared.schemas.enums import FrameProvider
+from shared.schemas.events import FrameEvent
 
 from .batching import BatchManager, FrameItem
 from .config import settings
@@ -35,7 +34,6 @@ from .filtering import DetectionFilter
 from .model_loader import ModelLoader
 from .publisher import DetectionPublisher
 from .tracker import TrackerManager
-
 
 logger = logging.getLogger(__name__)
 
@@ -460,11 +458,10 @@ class DetectionConsumer(BaseStreamConsumer):
             return
 
         try:
-            async with self._session_factory() as session:
-                async with session.begin():
-                    await session.execute(
-                        _INSERT_DETECTION_SQL, rows
-                    )
+            async with self._session_factory() as session, session.begin():
+                await session.execute(
+                    _INSERT_DETECTION_SQL, rows
+                )
 
         except Exception:
             # A detection already published to Redis must not be lost
