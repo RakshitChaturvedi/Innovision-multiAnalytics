@@ -4,6 +4,7 @@ Recognition consumer.
 Consumes DetectionEvents. For each face track that passes sampling and
 the quality gate:
   → runs the model exactly ONCE per crop (detection + embedding together)
+  → maps SCRFD's crop-local face box back onto the full frame and stores it
   → searches the in-memory enrolled-embedding cache (no DB hit)
   → writes embedding + recognition event to DB, atomically, with audit
   → publishes RecognitionEvent to events:recognitions after commit
@@ -14,6 +15,7 @@ service runs a single model pack against every camera in scope. See
 model_loader.py for the single-pack loading logic.
 """
 import asyncio
+import json
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -158,14 +160,14 @@ class RecognitionConsumer(BaseStreamConsumer):
         ):
             return
 
-        face_crop = self._cropper.crop(frame, track.face_bbox)
-        if face_crop is None:
+        crop_result = self._cropper.crop(frame, track.face_bbox)
+        if crop_result is None:
             return
 
         # Cheap, model-free checks first — no point spending an inference
         # call on a crop that's already too small or too blurry.
         precheck = self._quality_gate.precheck_size_blur(
-            face_crop=face_crop,
+            face_crop=crop_result.image,
             min_face_size_px=cam_cfg.get("min_face_size_px", config.DEFAULT_MIN_FACE_SIZE_PX),
             blur_threshold=cam_cfg.get("blur_threshold", config.DEFAULT_BLUR_THRESHOLD),
         )
@@ -179,7 +181,7 @@ class RecognitionConsumer(BaseStreamConsumer):
         # Single model call for this crop — detection, alignment, and the
         # 512-d embedding all come from this one Face object. Blocking
         # (CPU/GPU-bound), so it runs off the event loop.
-        face = await asyncio.to_thread(self._model_loader.detect_best_face, face_crop)
+        face = await asyncio.to_thread(self._model_loader.detect_best_face, crop_result.image)
         if face is None:
             logger.debug("no_face_detected_by_model track=%d", track.track_id)
             return
@@ -202,6 +204,22 @@ class RecognitionConsumer(BaseStreamConsumer):
         embedding = extract_from_face(face)
         if embedding is None:
             return
+
+        # face.bbox from InsightFace is in the CROP's own pixel space
+        # (origin (0,0) = crop_result's top-left corner), not the frame's.
+        # crop_result.x1/y1 is the exact offset FaceCropper used to slice
+        # the crop out of the frame, so adding it back gives frame-pixel
+        # coordinates, which are then normalized to 0-1 for storage —
+        # same convention as every other bbox in this pipeline
+        # (track.face_bbox, detection_events.face_bbox, etc).
+        frame_h, frame_w = frame.shape[:2]
+        fx1, fy1, fx2, fy2 = face.bbox
+        refined_face_bbox = {
+            "x1": max(0.0, min((crop_result.x1 + float(fx1)) / frame_w, 1.0)),
+            "y1": max(0.0, min((crop_result.y1 + float(fy1)) / frame_h, 1.0)),
+            "x2": max(0.0, min((crop_result.x1 + float(fx2)) / frame_w, 1.0)),
+            "y2": max(0.0, min((crop_result.y1 + float(fy2)) / frame_h, 1.0)),
+        }
 
         similarity_threshold = cam_cfg.get("similarity_threshold", config.VISITOR_THRESHOLD)
         matched_person, similarity_score = self._cache.search(
@@ -229,6 +247,7 @@ class RecognitionConsumer(BaseStreamConsumer):
             identity_tag=identity_tag,
             person_id=person_id,
             similarity_score=similarity_score,
+            refined_face_bbox=refined_face_bbox,
         )
 
     async def _persist_and_publish(
@@ -240,6 +259,7 @@ class RecognitionConsumer(BaseStreamConsumer):
         identity_tag: IdentityTag,
         person_id: str | None,
         similarity_score: float,
+        refined_face_bbox: dict,
     ) -> None:
         embedding_id = str(uuid.uuid4())
         recognition_id = str(uuid.uuid4())
@@ -251,13 +271,22 @@ class RecognitionConsumer(BaseStreamConsumer):
         # in the query.
         embedding_literal = "[" + ",".join(f"{v:.8f}" for v in embedding.tolist()) + "]"
 
+        # Same reasoning as the vector cast above — asyncpg does not
+        # reliably adapt a raw Python dict to `jsonb` via a text() query
+        # param, so it's serialized explicitly and cast, matching the
+        # pattern the detection worker already uses for its own JSONB
+        # columns (bounding_box / face_bbox in detection_events).
+        refined_face_bbox_json = json.dumps(refined_face_bbox)
+
         async with self._session_factory() as session:
             async with session.begin():
                 await session.execute(text("""
                     INSERT INTO face_embeddings (
-                        id, person_id, embedding, source_camera_id, quality_score, is_enrollment
+                        id, person_id, embedding, source_camera_id, quality_score,
+                        is_enrollment, refined_face_bbox
                     ) VALUES (
-                        :id, :person_id, CAST(:embedding AS vector), :source_camera_id, :quality_score, false
+                        :id, :person_id, CAST(:embedding AS vector), :source_camera_id, :quality_score,
+                        false, CAST(:refined_face_bbox AS jsonb)
                     )
                 """), {
                     "id": embedding_id,
@@ -265,6 +294,7 @@ class RecognitionConsumer(BaseStreamConsumer):
                     "embedding": embedding_literal,
                     "source_camera_id": str(detection_event.camera_id),
                     "quality_score": quality_score,
+                    "refined_face_bbox": refined_face_bbox_json,
                 })
 
                 await session.execute(text("""
