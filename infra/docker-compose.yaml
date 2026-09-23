@@ -146,8 +146,8 @@ services:
 
   event_processing:
     build:
-      context: ../services/event_processing
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: services/event_processing/Dockerfile
     container_name: innovision-event-processing
     restart: unless-stopped
     env_file: ../.env

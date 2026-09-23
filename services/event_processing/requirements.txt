@@ -1,0 +1,5 @@
+redis
+SQLAlchemy
+asyncpg
+pydantic
+pydantic-settings

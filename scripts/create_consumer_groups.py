@@ -18,7 +18,7 @@ STREAMS = {
         "intruder_group",
     ],
 
-    "events:zones":[
+    "events:zone":[
         "intruder_group",
     ],
 

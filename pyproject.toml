@@ -14,5 +14,10 @@ dependencies = [
     "redis>=8.0.0",
     "ruff>=0.15.16",
     "sqlalchemy>=2.0.50",
-    "minio>=7.2.0", # by Anish - for minio client
+    "numpy>=2.5.3",
+    "opencv-python>=5.0.0.93",
 ]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+asyncio_mode = "auto"
