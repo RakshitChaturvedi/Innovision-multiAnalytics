@@ -2,8 +2,12 @@ import asyncio
 import logging
 import sys
 
+from services.event_processing.src.workers.intruder.consumer import (
+    IntruderConsumer,
+)
+
 from services.event_processing.src.workers.zone_monitor.consumer import (
-    ZoneMonitorConsumer
+    ZoneMonitorConsumer,
 )
 
 
@@ -18,14 +22,20 @@ logging.basicConfig(
 
 async def main():
 
-    consumer = ZoneMonitorConsumer()
+    zone_monitor = ZoneMonitorConsumer()
+    intruder = IntruderConsumer()
 
     try:
-        await consumer.start()
+
+        await asyncio.gather(
+            zone_monitor.start(),
+            intruder.start(),
+        )
 
     except KeyboardInterrupt:
 
-        await consumer.stop()
+        await zone_monitor.stop()
+        await intruder.stop()
 
 
 if __name__ == "__main__":
