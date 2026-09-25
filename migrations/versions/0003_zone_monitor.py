@@ -5,7 +5,7 @@ import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 
 
-revision = "0003"
+revision = "0003_zone_monitor"
 down_revision = "0002"
 branch_labels = None
 depends_on = None
