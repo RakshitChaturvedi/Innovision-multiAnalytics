@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime
 
 import redis.asyncio as aioredis
 from sqlalchemy import text
@@ -18,7 +18,6 @@ from shared.schemas.enums import (
 )
 from shared.schemas.events import (
     AlertEvent,
-    RecognitionEvent,
     ZoneEvent,
 )
 
