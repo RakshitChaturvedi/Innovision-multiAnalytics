@@ -1,4 +1,3 @@
-import json
 import logging
 from datetime import datetime, timezone
 
@@ -216,9 +215,10 @@ class ZoneMonitorConsumer(BaseStreamConsumer):
         now: datetime,
     ) -> None:
 
-        event_id = (
-            detection_event.event_id
-        )
+        # For now the below code is not being used and for that is committed, if required can be used later
+        # event_id = (
+        #     detection_event.event_id
+        # )
 
         zone_event = ZoneEvent(
             camera_id=detection_event.camera_id,
