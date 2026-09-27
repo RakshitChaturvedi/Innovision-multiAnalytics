@@ -68,6 +68,7 @@ class ZoneEvent(BaseModel):
     timestamp: datetime
     event_type: EventType
     dwell_duration_seconds: Optional[float] = None
+    frame_reference: Optional[str] = None
 
 
 class CrowdFrameEvent(BaseModel):
@@ -91,5 +92,6 @@ class AlertEvent(BaseModel):
     description: Optional[str] = None
     source_event_ids: list[UUID]
     frame_reference: Optional[str] = None
+    frame_provider: Optional[FrameProvider] = None
     status: AlertStatus = AlertStatus.PENDING
     metadata: dict = Field(default_factory=dict)

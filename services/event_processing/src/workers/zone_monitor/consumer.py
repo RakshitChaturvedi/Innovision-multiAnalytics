@@ -230,6 +230,7 @@ class ZoneMonitorConsumer(BaseStreamConsumer):
             dwell_duration_seconds=(
                 transition.dwell_duration_seconds
             ),
+            frame_reference=detection_event.frame_reference,
         )
 
         async with self._session_factory() as session:
