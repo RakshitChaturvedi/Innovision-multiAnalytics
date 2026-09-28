@@ -95,8 +95,8 @@ class IntruderConsumer(BaseStreamConsumer):
             raw
         )
 
-        # We only classify entry events.
-        if zone_event.event_type == EventType.ENTERED:
+        # We classify both entry and dwell events.
+        if zone_event.event_type in (EventType.ENTERED, EventType.DWELL):
 
             await self._handle_entry(
                 zone_event
@@ -587,10 +587,8 @@ class IntruderConsumer(BaseStreamConsumer):
                 zone_event.event_id,
                 intruder_event_id,
             ],
-            # frame_reference=recognition.get( 
-            #     "frame_reference"
-            # ),
-            frame_reference=None, # Note this is not correct, it needs to be changed after frame_ref is corrected
+            frame_reference=zone_event.frame_reference,
+            frame_provider=None,
             status=AlertStatus.PENDING,
             metadata={
                 "zone_id": str(
