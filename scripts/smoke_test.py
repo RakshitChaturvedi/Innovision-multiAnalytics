@@ -6,7 +6,7 @@ from uuid import uuid4
 
 import redis.asyncio as aioredis
 
-from shared.schemas import CameraProfile, FrameEvent, FrameProvider
+from shared.schemas import FrameEvent, FrameProvider
 from shared.schemas.consumer import BaseStreamConsumer
 
 STREAM_NAME = "frames:test_camera"
@@ -15,7 +15,6 @@ CONSUMER_NAME = "smoke-test-consumer"
 REDIS_URL = "redis://localhost:6379"
 
 EXPECTED_CAMERA_ID = uuid4()
-EXPECTED_PROFILE = CameraProfile.BALANCED
 EXPECTED_FRAME_SEQ = 1
 EXPECTED_FRAME_SHAPE = (1920, 1080)
 EXPECTED_KEY_PREFIX = "innovision-snapshots"
@@ -45,7 +44,6 @@ async def run() -> None:
     print("\n── IntelliWatch Sprint 1 Smoke Test ──────────────────────────")
     event = FrameEvent(
         camera_id=EXPECTED_CAMERA_ID,
-        profile=EXPECTED_PROFILE,
         frame_seq=EXPECTED_FRAME_SEQ,
         frame_reference=str(uuid4()),
         frame_provider=FrameProvider.REDIS,
@@ -80,11 +78,6 @@ async def run() -> None:
         "Check Redis is running and consumer group exists."
     )
     print(f"[CONSUMER] Message received from stream  event_id={received.event_id}")
-
-    assert received.profile == EXPECTED_PROFILE, (
-        f"FAIL — profile mismatch. Expected {EXPECTED_PROFILE}, got {received.profile}"
-    )
-    print(f"[ASSERT]  profile            OK  {received.profile}")
 
     assert received.frame_seq == EXPECTED_FRAME_SEQ, (
         f"FAIL — frame_seq mismatch. Expected {EXPECTED_FRAME_SEQ}, got {received.frame_seq}"

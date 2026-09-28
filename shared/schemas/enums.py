@@ -1,11 +1,5 @@
 from enum import Enum
 
-class CameraProfile(str, Enum):
-    HIGH_SECURITY = "high_security"
-    BALANCED = "balanced"
-    HIGH_THROUGHPUT = "high_throughput"
-    CROWD_ONLY = "crowd_only"
-
 class IdentityTag(str, Enum):
     ENROLLED = "enrolled"
     VISITOR = "visitor"
@@ -54,7 +48,3 @@ class OperatorRole(str, Enum):
     ADMIN = "admin"
     OPERATOR = "operator"
     VIEWER = "viewer"
-
-class FrameProvider(str, Enum):
-    REDIS = "redis"
-    SHARED_MEMORY = "shared_memory"

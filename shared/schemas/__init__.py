@@ -3,17 +3,15 @@ from shared.schemas.enums import (
     AlertSeverity,
     AlertStatus,
     AlertType,
-    CameraProfile,
     CrowdModel,
     DensityLevel,
     EventType,
     IdentityTag,
     OperatorRole,
     ZoneType,
-    FrameProvider
 )
+from shared.platform_contracts.enums import FrameProvider
 from shared.schemas.events import (
-    AlertEvent,
     CrowdFrameEvent,
     DetectionEvent,
     FrameEvent,
@@ -23,7 +21,6 @@ from shared.schemas.events import (
 
 __all__ = [
     # enums
-    "CameraProfile",
     "IdentityTag",
     "AlertType",
     "AlertSeverity",
@@ -42,6 +39,5 @@ __all__ = [
     "RecognitionEvent",
     "ZoneEvent",
     "CrowdFrameEvent",
-    "AlertEvent",
     "FrameProvider"
 ]

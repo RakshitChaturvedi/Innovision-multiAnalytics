@@ -10,16 +10,14 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
+from shared.alerting.publisher import AlertPublisher, build_platform_alert
+from shared.platform_contracts.alert_event import AlertEvent
 from shared.schemas.consumer import BaseStreamConsumer
 from shared.schemas.enums import (
-    AlertStatus,
     AlertType,
     EventType,
 )
-from shared.schemas.events import (
-    AlertEvent,
-    ZoneEvent,
-)
+from shared.schemas.events import ZoneEvent
 
 from ...policies.intruder_policy import (
     classify_intruder,
@@ -576,21 +574,20 @@ class IntruderConsumer(BaseStreamConsumer):
             person_id=person_id,
         )
 
-        return AlertEvent(
+        return build_platform_alert(
+            domain_event_id=intruder_event_id,
             camera_id=zone_event.camera_id,
             timestamp=zone_event.timestamp,
             severity=severity,
-            alert_type=AlertType.INTRUDER,
+            alert_type=AlertType.INTRUDER.value,
             title=title,
             description=description,
-            source_event_ids=[
-                zone_event.event_id,
-                intruder_event_id,
-            ],
-            frame_reference=zone_event.frame_reference,
-            frame_provider=None,
-            status=AlertStatus.PENDING,
+            frame_seq=zone_event.frame_seq,
             metadata={
+                "source_event_ids": [
+                    zone_event.event_id,
+                    intruder_event_id,
+                ],
                 "zone_id": str(
                     zone_event.zone_id
                 ),
@@ -661,11 +658,8 @@ class IntruderConsumer(BaseStreamConsumer):
                 "Intruder publisher is not initialized"
             )
 
-        await self._publisher.xadd(
-            config.ALERTS_STREAM,
-            {
-                "data": alert.model_dump_json()
-            },
+        await AlertPublisher(
+            self._publisher,
+            stream=config.ALERTS_STREAM,
             maxlen=config.ALERTS_MAXLEN,
-            approximate=True,
-        )
+        ).publish(alert)

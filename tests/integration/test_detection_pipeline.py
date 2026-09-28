@@ -8,7 +8,7 @@ import numpy as np
 
 from services.detection.src.consumer import DetectionConsumer
 from services.detection.src.detector import RawDetection
-from shared.schemas.enums import CameraProfile, FrameProvider
+from shared.platform_contracts.enums import FrameProvider
 from shared.schemas.events import FrameEvent
 
 
@@ -43,7 +43,6 @@ class TestDetectionPipelineIntegration(unittest.IsolatedAsyncioTestCase):
             frame_reference=frame_ref,
             frame_provider=FrameProvider.REDIS,
             frame_shape=(480, 640),
-            profile=CameraProfile.BALANCED,
         )
 
         # 3. Instantiate DetectionConsumer
@@ -89,8 +88,8 @@ class TestDetectionPipelineIntegration(unittest.IsolatedAsyncioTestCase):
         msg_payload = {"data": frame_event.model_dump_json()}
         await consumer._process_with_ack(msg_id, msg_payload)
 
-        # Verify frame was fetched from Redis using proper frames: prefix
-        redis_mock.get.assert_called_with(f"frames:{frame_ref}")
+        # Verify frame_reference was used verbatim as the Redis key (no prefix)
+        redis_mock.get.assert_called_with(frame_ref)
 
         # Verify it was NOT prematurely acked on enqueue
         redis_mock.xack.assert_not_called()

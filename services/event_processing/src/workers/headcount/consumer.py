@@ -6,9 +6,9 @@ import redis.asyncio as aioredis
 from shared.schemas.consumer import BaseStreamConsumer
 from shared.schemas.events import (
     DetectionEvent,
-    AlertEvent,
 )
-from shared.schemas.enums import AlertSeverity, AlertType, AlertStatus
+from shared.alerting.publisher import AlertPublisher, build_platform_alert
+from shared.schemas.enums import AlertSeverity, AlertType
 
 from ...policies.zone_policy import (
     get_centroid,
@@ -138,38 +138,36 @@ class HeadcountConsumer(BaseStreamConsumer):
                     timestamp=now,
                 )
 
-                alert = AlertEvent(
+                alert = build_platform_alert(
+                    domain_event_id=breach_event_id,
                     camera_id=detection_event.camera_id,
                     timestamp=now,
                     severity=AlertSeverity.HIGH,
-                    alert_type=AlertType.HEADCOUNT_BREACH,
+                    alert_type=AlertType.HEADCOUNT_BREACH.value,
                     title="Headcount Threshold Exceeded",
                     description=(
                         f"Zone '{zone['name']}' reached {count} "
                         f"persons (threshold: {assessment.threshold})."
                     ),
-                    source_event_ids=[
-                        detection_event.event_id,
-                        breach_event_id,
-                    ],
-                    frame_reference=detection_event.frame_reference,
-                    frame_provider=None,
-                    status=AlertStatus.PENDING,
+                    frame_seq=detection_event.frame_seq,
                     metadata={
+                        "source_event_ids": [
+                            detection_event.event_id,
+                            breach_event_id,
+                        ],
                         "zone_id": zone_id,
                         "count": count,
                         "threshold": assessment.threshold,
                         "rolling_avg": round(rolling_avg, 2),
-                    }
+                    },
                 )
 
-                await self._publisher.xadd(
-                    config.ALERTS_STREAM,
-                    {"data": alert.model_dump_json()},
+                await AlertPublisher(
+                    self._publisher,
+                    stream=config.ALERTS_STREAM,
                     maxlen=config.ALERTS_MAXLEN,
-                    approximate=True,
-                )
-                
+                ).publish(alert)
+
                 logger.warning(
                     "headcount_breach camera=%s zone=%s count=%s threshold=%s",
                     camera_id,

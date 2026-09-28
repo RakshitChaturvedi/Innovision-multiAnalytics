@@ -64,7 +64,6 @@ def build_detection_event(
     """
     Construct the public DetectionEvent.
 
-    CameraProfile is intentionally NOT included.
     """
 
     # FIX: the previous call passed `event_type` and `track_id`, which
@@ -84,6 +83,10 @@ def build_detection_event(
             frame_event.frame_reference
         ),
 
+        frame_provider=(
+            frame_event.frame_provider
+        ),
+
         frame_seq=(
             frame_event.frame_seq
         ),
@@ -92,7 +95,6 @@ def build_detection_event(
             frame_event.frame_shape
         ),
 
-        profile=frame_event.profile,
 
         tracks=[
             build_track_result(track)

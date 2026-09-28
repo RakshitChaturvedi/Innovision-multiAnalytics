@@ -45,12 +45,10 @@ logger = logging.getLogger(__name__)
 
 # shared/storage/storage_minio_client.py exports the StorageClient class
 # only, no module-level singleton, so it's instantiated once here.
-# NOTE: StorageClient.buckets is a *list* indexed by position, not a dict
-# keyed by name — 0 is "innovision-snapshots" as currently defined in that
-# file. If that ever gets reordered or converted to a dict, this constant
-# needs to move with it.
+# StorageClient.buckets is a dict keyed by name; this still points at the
+# snapshots bucket (the recognition frame-source fix is a separate task).
 _storage = StorageClient()
-SNAPSHOTS_BUCKET = 0
+SNAPSHOTS_BUCKET = "snapshots"
 
 
 class RecognitionConsumer(BaseStreamConsumer):

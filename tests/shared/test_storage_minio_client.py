@@ -42,7 +42,7 @@ class TestInitialization:
     def test_creates_client_with_env_vars(self, mock_env, mock_minio):
         mock_minio_cls, mock_client = mock_minio
 
-        StorageClient()
+        StorageClient().client
 
         mock_minio_cls.assert_called_once_with(
             endpoint="localhost:9000",
@@ -58,7 +58,7 @@ class TestInitialization:
         monkeypatch.setenv("MINIO_SECRET_KEY", "password123")
         monkeypatch.setenv("MINIO_SECURE", "true")
 
-        StorageClient()
+        StorageClient().client
 
         mock_minio_cls.assert_called_once_with(
             endpoint="localhost:9000",
@@ -67,20 +67,22 @@ class TestInitialization:
             secure=True,
         )
 
-    def test_missing_required_env_var_raises(self, mock_minio, monkeypatch):
+    def test_missing_env_does_not_raise_at_construction(self, mock_minio, monkeypatch):
         monkeypatch.delenv("MINIO_ENDPOINT", raising=False)
         monkeypatch.setenv("MINIO_ACCESS_KEY", "admin")
         monkeypatch.setenv("MINIO_SECRET_KEY", "password123")
 
-        with pytest.raises(KeyError):
-            StorageClient()
+        storage = StorageClient()  # must not raise
 
-    def test_buckets_list_set_correctly(self, storage):
-        assert storage.buckets == [
-            "innovision-snapshots",
-            "innovision-reports",
-            "innovision-clips",
-        ]
+        with pytest.raises(KeyError):
+            storage.client
+
+    def test_buckets_dict_set_correctly(self, storage):
+        assert storage.buckets == {
+            "frames": "innovision-frames",
+            "snapshots": "innovision-snapshots",
+            "reports": "innovision-reports",
+        }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -94,7 +96,7 @@ class TestUpload:
         data = b"hello world"
 
         storage.upload(
-            bucket_key=0,
+            bucket_key="snapshots",
             object_key="frames/cam_01/000001.jpg",
             data=data,
             content_type="image/jpeg",
@@ -110,7 +112,7 @@ class TestUpload:
 
     def test_upload_returns_object_key(self, storage, mock_minio):
         result = storage.upload(
-            bucket_key=1,
+            bucket_key="reports",
             object_key="reports/2026-06/rpt-001.pdf",
             data=b"pdf bytes",
         )
@@ -118,13 +120,13 @@ class TestUpload:
 
     def test_upload_default_content_type(self, storage, mock_minio):
         _, mock_client = mock_minio
-        storage.upload(bucket_key=2, object_key="clips/cam_01/clip.mp4", data=b"data")
+        storage.upload(bucket_key="frames", object_key="clips/cam_01/clip.mp4", data=b"data")
         call_kwargs = mock_client.put_object.call_args.kwargs
         assert call_kwargs["content_type"] == "application/octet-stream"
 
     def test_upload_invalid_bucket_key_raises(self, storage, mock_minio):
-        with pytest.raises(IndexError):
-            storage.upload(bucket_key=99, object_key="x.jpg", data=b"data")
+        with pytest.raises(KeyError):
+            storage.upload(bucket_key="nope", object_key="x.jpg", data=b"data")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -139,16 +141,18 @@ class TestDownload:
         mock_response.read.return_value = b"file contents"
         mock_client.get_object.return_value = mock_response
 
-        result = storage.download(bucket_key=0, object_key="frames/cam_01/000001.jpg")
+        result = storage.download(bucket_key="snapshots", object_key="frames/cam_01/000001.jpg")
 
         mock_client.get_object.assert_called_once_with(
             "innovision-snapshots", "frames/cam_01/000001.jpg"
         )
         assert result == b"file contents"
+        mock_response.close.assert_called_once()
+        mock_response.release_conn.assert_called_once()
 
     def test_download_invalid_bucket_key_raises(self, storage, mock_minio):
-        with pytest.raises(IndexError):
-            storage.download(bucket_key=99, object_key="x.jpg")
+        with pytest.raises(KeyError):
+            storage.download(bucket_key="nope", object_key="x.jpg")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -162,7 +166,7 @@ class TestPresignedUrl:
         expected_url = "https://example.com/report.pdf"
         mock_client.presigned_get_object.return_value = expected_url
 
-        result = storage.presigned_url(bucket_key=1, object_key="report.pdf")
+        result = storage.presigned_url(bucket_key="reports", object_key="report.pdf")
 
         assert result == expected_url
 
@@ -170,7 +174,7 @@ class TestPresignedUrl:
         from datetime import timedelta
         _, mock_client = mock_minio
 
-        storage.presigned_url(bucket_key=1, object_key="report.pdf")
+        storage.presigned_url(bucket_key="reports", object_key="report.pdf")
 
         call_kwargs = mock_client.presigned_get_object.call_args.kwargs
         assert call_kwargs["expires"] == timedelta(hours=1)
@@ -179,7 +183,7 @@ class TestPresignedUrl:
         from datetime import timedelta
         _, mock_client = mock_minio
 
-        storage.presigned_url(bucket_key=1, object_key="report.pdf", expires_hours=24)
+        storage.presigned_url(bucket_key="reports", object_key="report.pdf", expires_hours=24)
 
         call_kwargs = mock_client.presigned_get_object.call_args.kwargs
         assert call_kwargs["expires"] == timedelta(hours=24)
@@ -187,7 +191,7 @@ class TestPresignedUrl:
     def test_presigned_url_uses_correct_bucket_and_key(self, storage, mock_minio):
         _, mock_client = mock_minio
 
-        storage.presigned_url(bucket_key=0, object_key="alerts/2026-06-12/abc.jpg")
+        storage.presigned_url(bucket_key="snapshots", object_key="alerts/2026-06-12/abc.jpg")
 
         call_kwargs = mock_client.presigned_get_object.call_args.kwargs
         assert call_kwargs["bucket_name"] == "innovision-snapshots"
@@ -204,7 +208,7 @@ class TestObjectExists:
         _, mock_client = mock_minio
         mock_client.stat_object.return_value = MagicMock()
 
-        result = storage.object_exists(bucket_key=1, object_key="report.pdf")
+        result = storage.object_exists(bucket_key="reports", object_key="report.pdf")
 
         assert result is True
         mock_client.stat_object.assert_called_once_with("innovision-reports", "report.pdf")
@@ -220,10 +224,10 @@ class TestObjectExists:
             response={},
         )
 
-        result = storage.object_exists(bucket_key=1, object_key="missing.pdf")
+        result = storage.object_exists(bucket_key="reports", object_key="missing.pdf")
 
         assert result is False
 
     def test_object_exists_invalid_bucket_key_raises(self, storage, mock_minio):
-        with pytest.raises(IndexError):
-            storage.object_exists(bucket_key=99, object_key="x.pdf")
+        with pytest.raises(KeyError):
+            storage.object_exists(bucket_key="nope", object_key="x.pdf")

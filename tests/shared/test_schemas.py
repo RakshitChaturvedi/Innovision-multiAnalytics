@@ -5,12 +5,10 @@ import pytest
 from pydantic import ValidationError
 
 from shared.schemas import (
-    AlertEvent,
     AlertSeverity,
     AlertStatus,
     AlertType,
     BoundingBox,
-    CameraProfile,
     CrowdFrameEvent,
     CrowdModel,
     DensityLevel,
@@ -67,7 +65,6 @@ def make_frame(**overrides):
         "frame_reference": "frame-000001",
         "frame_provider": FrameProvider.REDIS,
         "frame_shape": (1920, 1080),
-        "profile": CameraProfile.BALANCED,
     }
     defaults.update(overrides)
     return FrameEvent(**defaults)
@@ -79,10 +76,10 @@ def make_detection(**overrides):
         "frame_event_id": uuid4(),
         "timestamp": utcnow(),
         "frame_reference": "frame-000001",
+        "frame_provider": FrameProvider.REDIS,
         "frame_seq": 1,
         "frame_shape": (1920, 1080),
         "tracks": [],
-        "profile": CameraProfile.BALANCED,
         "inference_latency_ms": 12.4,
     }
     defaults.update(overrides)
@@ -130,18 +127,6 @@ def make_crowd(**overrides):
     }
     defaults.update(overrides)
     return CrowdFrameEvent(**defaults)
-
-
-def make_alert(**overrides):
-    defaults = {
-        "camera_id": uuid4(),
-        "timestamp": utcnow(),
-        "severity": AlertSeverity.HIGH,
-        "alert_type": AlertType.RESTRICTED_ENTRY,
-        "source_event_ids": [uuid4()],
-    }
-    defaults.update(overrides)
-    return AlertEvent(**defaults)
 
 
 # =============================================================================
@@ -271,25 +256,21 @@ class TestFrameEvent:
         assert event.frame_reference == "frame-000001"
         assert event.frame_provider == FrameProvider.REDIS
         assert event.frame_shape == (1920, 1080)
-        assert event.profile == CameraProfile.BALANCED
 
-    def test_frame_seq_validation(self):
-        with pytest.raises(ValidationError):
-            make_frame(frame_seq=-1)
+    def test_has_no_profile_field(self):
+        assert "profile" not in FrameEvent.model_fields
+        assert "profile" not in DetectionEvent.model_fields
 
     def test_different_frame_provider(self):
         event = make_frame(
-            frame_provider=FrameProvider.SHARED_MEMORY
+            frame_provider=FrameProvider.MINIO
         )
 
-        assert event.frame_provider == FrameProvider.SHARED_MEMORY
+        assert event.frame_provider == FrameProvider.MINIO
 
-    def test_camera_profile(self):
-        event = make_frame(
-            profile=CameraProfile.HIGH_SECURITY
-        )
-
-        assert event.profile == CameraProfile.HIGH_SECURITY
+    def test_shared_memory_provider_rejected(self):
+        with pytest.raises(ValidationError):
+            make_frame(frame_provider="shared_memory")
 
     def test_frame_shape(self):
         event = make_frame(
@@ -314,7 +295,6 @@ class TestFrameEvent:
                 frame_reference="frame",
                 frame_provider=FrameProvider.REDIS,
                 frame_shape=(1920, 1080),
-                profile=CameraProfile.BALANCED,
             )
 
     def test_missing_frame_reference_fails(self):
@@ -325,7 +305,6 @@ class TestFrameEvent:
                 frame_seq=1,
                 frame_provider=FrameProvider.REDIS,
                 frame_shape=(1920, 1080),
-                profile=CameraProfile.BALANCED,
             )
 
     def test_missing_frame_provider_fails(self):
@@ -336,7 +315,6 @@ class TestFrameEvent:
                 frame_seq=1,
                 frame_reference="frame",
                 frame_shape=(1920, 1080),
-                profile=CameraProfile.BALANCED,
             )
 
 
@@ -366,7 +344,7 @@ class TestDetectionEvent:
         assert event.tracks[0].track_id == 1
         assert event.tracks[1].track_id == 2
 
-        assert event.profile == CameraProfile.BALANCED
+        assert event.frame_provider == FrameProvider.REDIS
         assert event.inference_latency_ms == pytest.approx(12.4)
 
     def test_empty_tracks(self):
@@ -388,12 +366,18 @@ class TestDetectionEvent:
 
         assert len(event.tracks) == 10
 
-    def test_profile_change(self):
-        event = make_detection(
-            profile=CameraProfile.HIGH_THROUGHPUT
-        )
-
-        assert event.profile == CameraProfile.HIGH_THROUGHPUT
+    def test_missing_frame_provider_fails(self):
+        with pytest.raises(ValidationError):
+            DetectionEvent(
+                camera_id=uuid4(),
+                frame_event_id=uuid4(),
+                timestamp=utcnow(),
+                frame_reference="frame",
+                frame_seq=1,
+                frame_shape=(1920, 1080),
+                tracks=[],
+                inference_latency_ms=10,
+            )
 
     def test_frame_shape(self):
         event = make_detection(
@@ -431,7 +415,6 @@ class TestDetectionEvent:
                 frame_reference="frame",
                 frame_seq=1,
                 frame_shape=(1920, 1080),
-                profile=CameraProfile.BALANCED,
                 inference_latency_ms=10,
             )
 
@@ -444,7 +427,6 @@ class TestDetectionEvent:
                 frame_seq=1,
                 frame_shape=(1920, 1080),
                 tracks=[],
-                profile=CameraProfile.BALANCED,
                 inference_latency_ms=10,
             )
 
@@ -457,7 +439,6 @@ class TestDetectionEvent:
                 frame_seq=1,
                 frame_shape=(1920, 1080),
                 tracks=[],
-                profile=CameraProfile.BALANCED,
                 inference_latency_ms=10,
             )
 # =============================================================================
@@ -763,137 +744,10 @@ class TestCrowdFrameEvent:
 
 
 # =============================================================================
-# AlertEvent Tests
-# =============================================================================
-
-class TestAlertEvent:
-
-    def test_valid_alert(self):
-        source_events = [uuid4(), uuid4()]
-
-        event = make_alert(
-            source_event_ids=source_events,
-        )
-
-        assert isinstance(event.alert_id, UUID)
-        assert isinstance(event.camera_id, UUID)
-
-        assert event.severity == AlertSeverity.HIGH
-        assert event.alert_type == AlertType.RESTRICTED_ENTRY
-
-        assert event.status == AlertStatus.PENDING
-        assert event.source_event_ids == source_events
-
-        assert event.title == "Alert"
-        assert event.description is None
-        assert event.frame_reference is None
-        assert event.metadata == {}
-
-    def test_custom_title(self):
-        event = make_alert(
-            title="Restricted Entry",
-        )
-
-        assert event.title == "Restricted Entry"
-
-    def test_description(self):
-        event = make_alert(
-            description="Unauthorized person detected.",
-        )
-
-        assert event.description == "Unauthorized person detected."
-
-    def test_frame_reference(self):
-        event = make_alert(
-            frame_reference="frame-123",
-        )
-
-        assert event.frame_reference == "frame-123"
-
-    def test_metadata(self):
-        metadata = {
-            "zone": "Server Room",
-            "confidence": 0.98,
-        }
-
-        event = make_alert(
-            metadata=metadata,
-        )
-
-        assert event.metadata == metadata
-
-    def test_status(self):
-        event = make_alert(
-            status=AlertStatus.RESOLVED,
-        )
-
-        assert event.status == AlertStatus.RESOLVED
-
-    @pytest.mark.parametrize(
-        "severity",
-        [
-            AlertSeverity.CRITICAL,
-            AlertSeverity.HIGH,
-            AlertSeverity.MEDIUM,
-            AlertSeverity.LOW,
-        ],
-    )
-    def test_all_severities(self, severity):
-        event = make_alert(
-            severity=severity,
-        )
-
-        assert event.severity == severity
-
-    @pytest.mark.parametrize(
-        "alert_type",
-        [
-            AlertType.RESTRICTED_ENTRY,
-            AlertType.INTRUDER,
-            AlertType.HEADCOUNT_BREACH,
-            AlertType.CROWD_DENSITY,
-        ],
-    )
-    def test_all_alert_types(self, alert_type):
-        event = make_alert(
-            alert_type=alert_type,
-        )
-
-        assert event.alert_type == alert_type
-
-    def test_json_roundtrip(self):
-        event = make_alert(
-            frame_reference="frame-42",
-            metadata={"zone": "A"},
-            status=AlertStatus.ACKNOWLEDGED,
-        )
-
-        serialized = event.model_dump_json()
-        reconstructed = AlertEvent.model_validate_json(serialized)
-
-        assert reconstructed == event
-
-    def test_missing_source_events_fails(self):
-        with pytest.raises(ValidationError):
-            AlertEvent(
-                camera_id=uuid4(),
-                timestamp=utcnow(),
-                severity=AlertSeverity.HIGH,
-                alert_type=AlertType.INTRUDER,
-            )
-
-
-# =============================================================================
 # Enum Tests
 # =============================================================================
 
 class TestEnums:
-
-    def test_camera_profiles(self):
-        assert CameraProfile.HIGH_SECURITY.value == "high_security"
-        assert CameraProfile.BALANCED.value == "balanced"
-        assert CameraProfile.HIGH_THROUGHPUT.value == "high_throughput"
-        assert CameraProfile.CROWD_ONLY.value == "crowd_only"
 
     def test_identity_tags(self):
         assert IdentityTag.ENROLLED.value == "enrolled"
@@ -902,7 +756,8 @@ class TestEnums:
 
     def test_frame_provider(self):
         assert FrameProvider.REDIS.value == "redis"
-        assert FrameProvider.SHARED_MEMORY.value == "shared_memory"
+        assert FrameProvider.MINIO.value == "minio"
+        assert {p.value for p in FrameProvider} == {"redis", "minio"}
 
     def test_event_types(self):
         assert EventType.ENTERED.value == "entered"

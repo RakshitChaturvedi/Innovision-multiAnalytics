@@ -15,7 +15,7 @@ from services.detection.src.tracker import (
     _DetectionResults,
 )
 from shared.schemas.common import BoundingBox, TrackResult
-from shared.schemas.enums import CameraProfile, FrameProvider
+from shared.platform_contracts.enums import FrameProvider
 from shared.schemas.events import DetectionEvent, FrameEvent
 
 
@@ -103,7 +103,6 @@ class TestPublisher(unittest.TestCase):
             frame_reference="frame-001",
             frame_provider=FrameProvider.REDIS,
             frame_shape=(1080, 1920),
-            profile=CameraProfile.BALANCED,
         )
 
         track = FilteredTrack(
@@ -165,7 +164,7 @@ class TestDetectionConsumer(unittest.IsolatedAsyncioTestCase):
         consumer.redis.xack.assert_not_called()
 
     @patch("services.detection.src.consumer.create_async_engine")
-    async def test_fetch_frame_key_prefix(self, mock_engine):
+    async def test_fetch_frame_uses_reference_verbatim(self, mock_engine):
         from services.detection.src.consumer import DetectionConsumer
 
         consumer = DetectionConsumer()
@@ -179,12 +178,11 @@ class TestDetectionConsumer(unittest.IsolatedAsyncioTestCase):
             frame_reference="uuid-frame-123",
             frame_provider=FrameProvider.REDIS,
             frame_shape=(1080, 1920),
-            profile=CameraProfile.BALANCED,
         )
 
         data = await consumer._fetch_frame(event)
         self.assertEqual(data, b"raw_image_data")
-        consumer._side_redis.get.assert_called_once_with("frames:uuid-frame-123")
+        consumer._side_redis.get.assert_called_once_with("uuid-frame-123")
 
     @patch("services.detection.src.consumer.create_async_engine")
     async def test_consumer_stop_without_error(self, mock_engine):

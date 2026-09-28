@@ -4,27 +4,23 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field
 
+from shared.platform_contracts.enums import FrameProvider
+from shared.platform_contracts.frame_event import FrameEvent
 from shared.schemas.common import TrackResult
 from shared.schemas.enums import (
-    AlertSeverity,
-    AlertStatus,
-    AlertType,
-    CameraProfile,
     IdentityTag,
     CrowdModel,
-    FrameProvider,
     EventType
 )
 
-class FrameEvent(BaseModel):
-    event_id: UUID = Field(default_factory=uuid4)
-    camera_id: UUID
-    timestamp: datetime
-    frame_seq: int = Field(ge=0)
-    frame_reference: str
-    frame_provider: FrameProvider
-    frame_shape: tuple[int, int]
-    profile: CameraProfile
+__all__ = [
+    "FrameEvent",
+    "FrameProvider",
+    "DetectionEvent",
+    "RecognitionEvent",
+    "ZoneEvent",
+    "CrowdFrameEvent",
+]
 
 
 class DetectionEvent(BaseModel):
@@ -33,10 +29,10 @@ class DetectionEvent(BaseModel):
     frame_event_id: UUID
     timestamp: datetime
     frame_reference: str
+    frame_provider: FrameProvider
     frame_seq: int
     frame_shape: tuple[int, int]
     tracks: List[TrackResult]
-    profile: CameraProfile
     inference_latency_ms: float
 
 
@@ -80,18 +76,3 @@ class CrowdFrameEvent(BaseModel):
     timestamp: datetime 
     crowd_model: CrowdModel
     zone_ids: List[UUID] = Field(default_factory=list)
-
-
-class AlertEvent(BaseModel):
-    alert_id: UUID = Field(default_factory=uuid4)
-    camera_id: UUID
-    timestamp: datetime
-    severity: AlertSeverity
-    alert_type: AlertType
-    title: str = "Alert"
-    description: Optional[str] = None
-    source_event_ids: list[UUID]
-    frame_reference: Optional[str] = None
-    frame_provider: Optional[FrameProvider] = None
-    status: AlertStatus = AlertStatus.PENDING
-    metadata: dict = Field(default_factory=dict)

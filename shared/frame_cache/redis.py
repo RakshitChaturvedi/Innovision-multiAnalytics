@@ -12,7 +12,7 @@ class RedisFrameCache(FrameCache):
     def __init__(self, redis_url: str) -> None:
         self._redis = aioredis.from_url(
             redis_url,
-            decode_response=False
+            decode_responses=False
         )
     
     @staticmethod
@@ -40,6 +40,8 @@ class RedisFrameCache(FrameCache):
             if isinstance(result, bytes): 
                 return result
             raise FrameCacheOperationError("Expected bytes from Redis Cache.")
+        except FrameCacheOperationError:
+            raise
         except Exception as exc:
             raise FrameCacheOperationError("Failed to retrieve frame from cache.") from exc
     

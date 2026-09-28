@@ -22,9 +22,10 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
+from shared.frames import fetch_frame
 from shared.schemas.consumer import BaseStreamConsumer
-from shared.schemas.enums import FrameProvider
 from shared.schemas.events import FrameEvent
+from shared.storage.storage_minio_client import StorageClient
 
 from .batching import BatchManager, FrameItem
 from .config import settings
@@ -126,6 +127,7 @@ class DetectionConsumer(BaseStreamConsumer):
         )
 
         self._side_redis: aioredis.Redis | None = None
+        self._storage = StorageClient()
         self._publisher: DetectionPublisher | None = None
 
         self._batch_processor_task: asyncio.Task | None = None
@@ -476,42 +478,22 @@ class DetectionConsumer(BaseStreamConsumer):
 
     async def _fetch_frame(self, frame_event: FrameEvent) -> bytes:
         """
-        Fetch the live frame from Redis cache.
+        Fetch the frame: Redis key verbatim first, MinIO cold copy on a miss.
 
-        MinIO is cold storage only and is not used by the
-        real-time detection pipeline.
+        Raises FrameUnavailable (a PermanentError) if the frame is gone;
+        connection errors propagate so the message is retried.
         """
-
-        if frame_event.frame_provider != FrameProvider.REDIS:
-            raise RuntimeError(
-                f"Unsupported frame provider for detection: "
-                f"{frame_event.frame_provider}"
-            )
 
         if self._side_redis is None:
             raise RuntimeError(
                 "Redis connection is not initialized."
             )
 
-        ref = frame_event.frame_reference
-        key = ref if ref.startswith("frames:") else f"frames:{ref}"
-
-        try:
-            data = await self._side_redis.get(key)
-
-        except Exception as exc:
-            logger.error(
-                "redis_frame_fetch_failed reference=%s key=%s error=%s",
-                frame_event.frame_reference,
-                key,
-                exc,
-            )
-            raise
-
-        if data is None:
-            raise RuntimeError(
-                f"Frame not found in Redis cache: "
-                f"{key}"
-            )
-
-        return data
+        return await fetch_frame(
+            self._side_redis,
+            self._storage,
+            camera_id=frame_event.camera_id,
+            frame_seq=frame_event.frame_seq,
+            frame_reference=frame_event.frame_reference,
+            frame_provider=frame_event.frame_provider,
+        )
