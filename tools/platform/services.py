@@ -185,7 +185,8 @@ def start(r: Reporter, paths: Paths, services=SERVICES, *, python: str = sys.exe
             continue
         paths.pid(s).unlink(missing_ok=True)
         paths.stop(s).unlink(missing_ok=True)
-        env = {**os.environ, "PYTHONPATH": str(ROOT), "PYTHONUNBUFFERED": "1",
+        pythonpath = os.pathsep.join(p for p in (str(ROOT), os.environ.get("PYTHONPATH")) if p)
+        env = {**os.environ, "PYTHONPATH": pythonpath, "PYTHONUNBUFFERED": "1",
                "INNOVISION_STOP_FILE": str(paths.stop(s))}
         log = open(paths.log(s), "ab")
         kwargs = {}
@@ -276,7 +277,7 @@ def main(argv=None) -> int:
     ap.add_argument("--timeout", type=float, default=20, help="graceful stop timeout (seconds)")
     args = ap.parse_args(argv)
     r = Reporter()
-    paths = Paths(ROOT / "logs")
+    paths = Paths(Path(os.environ.get("INNOVISION_LOGS_DIR") or ROOT / "logs"))
     if args.action == "up":
         env = load_env()
         if not env.get("INTERNAL_SERVICE_TOKEN"):
