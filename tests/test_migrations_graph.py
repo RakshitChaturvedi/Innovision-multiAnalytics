@@ -44,3 +44,32 @@ def test_env_uses_analytics_version_table_in_both_modes():
     env = (ROOT / "migrations" / "env.py").read_text()
     assert 'VERSION_TABLE = "alembic_version_analytics"' in env
     assert env.count("version_table=VERSION_TABLE") == 2
+
+
+def _added_columns(path: Path) -> set[tuple[str, str]]:
+    """(table, column) pairs added by a migration file, from raw SQL and op.add_column."""
+    import re
+
+    src = path.read_text()
+    up = src.split("def downgrade", 1)[0]
+    found = set()
+    for m in re.finditer(r'op\.add_column\(\s*"(\w+)",\s*sa\.Column\(\s*"(\w+)"', up):
+        found.add((m.group(1), m.group(2)))
+    for m in re.finditer(r"ALTER TABLE\s+(\w+)(.*?)(?:\"\"\"|\")", up, re.S | re.I):
+        for col in re.finditer(r"ADD COLUMN\s+(\w+)", m.group(2), re.I):
+            found.add((m.group(1), col.group(1)))
+    return found
+
+
+def test_no_two_migrations_add_the_same_column():
+    seen: dict[tuple[str, str], str] = {}
+    for path in sorted((ROOT / "migrations" / "versions").glob("*.py")):
+        for key in _added_columns(path):
+            assert key not in seen, f"{key} added by both {seen[key]} and {path.name}"
+            seen[key] = path.name
+
+
+def test_0007_sits_on_top_of_0006_reliability(script):
+    rev = script.get_revision("0007_headcount_breach_state")
+    assert rev.down_revision == "0006_reliability"
+    assert script.get_heads() == ["0007_headcount_breach_state"]
