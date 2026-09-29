@@ -44,5 +44,12 @@ class IntruderConfig(ServiceSettings):
 
     RECOGNITION_FUTURE_S: float = 5.0
 
+    # > 0: a new intruder event within this many seconds (event time) of an
+    # already published alert for the same camera+zone is recorded with
+    # alert_suppressed = true and NOT published. 0 disables the cooldown.
+    ALERT_COOLDOWN_S: float = Field(
+        default=0.0, ge=0, validation_alias="INTRUDER_ALERT_COOLDOWN_S"
+    )
+
 
 config = IntruderConfig()
