@@ -56,12 +56,12 @@ def running_containers(runner=run) -> list[tuple[str, str, str]] | None:
     return rows
 
 
-def running_stub_containers(platform_path: Path, runner=run) -> list[str] | None:
+def running_stub_containers(platform_path: Path | None, runner=run) -> list[str] | None:
     """Containers started from docker-compose.stubs.yml (by compose label), or whose
     container_name only the stubs file defines. None if docker cannot be asked."""
-    stubs_file = platform_compose(platform_path, stubs=True)
     stub_names: set[str] = set()
-    if stubs_file.exists():
+    stubs_file = platform_compose(platform_path, stubs=True) if platform_path else None
+    if stubs_file is not None and stubs_file.exists():
         main_file = platform_compose(platform_path)
         main = compose_services(main_file) if main_file.exists() else {}
         main_containers = {c for c in main.values() if c}
@@ -74,13 +74,13 @@ def running_stub_containers(platform_path: Path, runner=run) -> list[str] | None
                    if "docker-compose.stubs.yml" in files.replace("\\", "/") or name in stub_names})
 
 
-def check_stubs(r: Reporter, platform_path: Path, runner=run) -> None:
+def check_stubs(r: Reporter, platform_path: Path | None, runner=run) -> None:
     stubs = running_stub_containers(platform_path, runner)
     if stubs is None:
         r.fail("stubs", "cannot list containers (docker ps failed)", "start Docker Desktop")
     elif stubs:
         r.fail("stubs", f"stub containers running: {', '.join(stubs)}",
-               f"docker compose -f {platform_compose(platform_path, stubs=True)} down "
+               f"docker compose -f {platform_compose(platform_path or '<PlatformPath>', stubs=True)} down "
                "(the stubs must never run with the use case)")
     else:
         r.ok("stubs", "no container from docker-compose.stubs.yml is running")
