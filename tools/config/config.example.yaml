@@ -1,0 +1,32 @@
+# Copy to config.yaml, edit, then:
+#   .venv\Scripts\python -m tools.config.apply_config config.yaml --dry-run
+#   .venv\Scripts\python -m tools.config.apply_config config.yaml
+#
+# Polygons: [x, y] corners in 0.0-1.0 of the camera image (x right, y down),
+# read off the grid made by: python -m tools.config.snapshot --camera "<name>"
+# Zone types: monitored (headcount), restricted (intruder alerts), safe.
+
+cameras:
+  - name: "Phone 1"                     # exactly as registered in the platform
+    zones:
+      - name: "Lobby"
+        type: monitored
+        polygon: [[0.1, 0.1], [0.9, 0.1], [0.9, 0.9], [0.1, 0.9]]
+        max_headcount: 3                # headcount alert above this (rolling average)
+        dwell_threshold_seconds: 15
+  - name: "Phone 2"
+    zones:
+      - name: "Server room"
+        type: restricted
+        polygon: [[0.55, 0.2], [0.95, 0.2], [0.95, 0.95], [0.55, 0.95]]
+        dwell_threshold_seconds: 10
+
+people:
+  - name: "Alice"
+    images_dir: "C:/innovision/enrollment/alice"   # photos with exactly one clear frontal face
+    authorized_zones: ["Phone 2/Server room"]      # "camera name/zone name"; exact set
+    blocklisted: false
+  - name: "Mallory"
+    images_dir: "C:/innovision/enrollment/mallory"
+    authorized_zones: []
+    blocklisted: true
