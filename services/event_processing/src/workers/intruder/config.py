@@ -16,7 +16,7 @@ class IntruderConfig:
 
     DATABASE_URL = os.environ.get(
         "DATABASE_URL",
-        "postgresql+asyncpg://postgres:postgres@postgres:5432/innovision",
+        "postgresql+asyncpg://postgres:postgres@postgres:5432/innovision_analytics",
     )
 
     ZONE_EVENTS_STREAM = "events:zone"
@@ -46,8 +46,17 @@ class IntruderConfig:
     RECOGNITION_LOOKUP_DELAY_SECONDS = float(
         os.environ.get(
             "INTRUDER_RECOGNITION_LOOKUP_DELAY_SECONDS",
-            "0.2",
+            "0.3",
         )
+    )
+
+    # Only recognitions in [zone_ts - MAX_AGE, zone_ts + FUTURE] count.
+    RECOGNITION_MAX_AGE_S = float(
+        os.environ.get("RECOGNITION_MAX_AGE_S", "30")
+    )
+
+    RECOGNITION_FUTURE_S = float(
+        os.environ.get("RECOGNITION_FUTURE_S", "5")
     )
 
 

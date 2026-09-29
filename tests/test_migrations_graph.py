@@ -19,8 +19,9 @@ def script():
     return ScriptDirectory.from_config(cfg)
 
 
-def test_single_head_is_0006(script):
-    assert script.get_heads() == ["0006_reliability"]
+def test_exactly_one_head(script):
+    # Name-agnostic: other branches may add migrations on top.
+    assert len(script.get_heads()) == 1
 
 
 def test_0005_headcount_is_directly_below_head(script):

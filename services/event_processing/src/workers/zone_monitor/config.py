@@ -9,7 +9,7 @@ class ZoneMonitorConfig:
 
     DATABASE_URL = os.environ.get(
         "DATABASE_URL",
-        "postgresql+asyncpg://postgres:postgres@postgres:5432/innovision",
+        "postgresql+asyncpg://postgres:postgres@postgres:5432/innovision_analytics",
     )
 
     DETECTIONS_STREAM = "events:detections"
@@ -26,12 +26,28 @@ class ZoneMonitorConfig:
 
     ZONE_CONFIG_CACHE_PREFIX = "cache:zone_config"
     ZONE_CONFIG_CACHE_TTL = 300
+    # In-process cache TTL (seconds)
+    ZONE_CACHE_TTL_S = float(
+        os.environ.get("ZONE_CACHE_TTL_S", "30")
+    )
 
-    TRACK_STATE_PREFIX = "zone:track_state"
-    TRACK_STATE_TTL = 60
+    # Per-camera hash: field track_id -> JSON track state
+    ACTIVE_TRACKS_PREFIX = "zone:active"
+    # Per-camera bookkeeping for the stale-camera sweeper
+    CAMERA_META_PREFIX = "zone:meta"
+    ACTIVE_STATE_TTL = 3600
 
-    ENTRY_TIME_PREFIX = "zone:entry_time"
-    ENTRY_TIME_TTL = 3600
+    # A track missing from an event for longer than this is exited (event time)
+    LOST_TRACK_TIMEOUT_S = float(
+        os.environ.get("LOST_TRACK_TIMEOUT_S", "2.0")
+    )
+    # A camera with no events for this long (wall clock) is swept
+    STALE_CAMERA_S = float(
+        os.environ.get("STALE_CAMERA_S", "10")
+    )
+    SWEEP_INTERVAL_S = float(
+        os.environ.get("ZONE_SWEEP_INTERVAL_S", "5")
+    )
 
     DEFAULT_DWELL_THRESHOLD_SECONDS = int(
         os.environ.get(
