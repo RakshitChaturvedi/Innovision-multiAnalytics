@@ -43,12 +43,17 @@ class ZoneMonitorConsumer(BaseStreamConsumer):
         self._zone_store: ZoneStore | None = None
         self._processor: ZoneProcessor | None = None
         self._sweeper_task: asyncio.Task | None = None
+        self._redis_client: aioredis.Redis | None = None
 
     async def start(self):
+
+        if self._shutdown.is_set():  # stop() already ran: start nothing
+            return
 
         redis_client = await aioredis.from_url(
             f"redis://{config.REDIS_HOST}:{config.REDIS_PORT}"
         )
+        self._redis_client = redis_client
 
         self._zone_store = ZoneStore(
             session_factory=self._session_factory,
@@ -73,6 +78,11 @@ class ZoneMonitorConsumer(BaseStreamConsumer):
             )
         )
 
+        if self._shutdown.is_set():
+            # stop() raced the setup above and may have missed some of it
+            await self._close_components()
+            return
+
         logger.info(
             "zone_monitor_consumer_ready"
         )
@@ -81,13 +91,21 @@ class ZoneMonitorConsumer(BaseStreamConsumer):
 
     async def stop(self):
         self._shutdown.set()  # background tasks dying from here on are stopping
-        for task in (self._sweeper_task,):
-            if task:
-                task.cancel()
-                await asyncio.gather(task, return_exceptions=True)
+        await self._close_components()
+        await super().stop()
+
+    async def _close_components(self):
+        """Sweeper and invalidation listener first, then their Redis client.
+        Idempotent: stop() and a racing start() may both call it."""
+        sweeper, self._sweeper_task = self._sweeper_task, None
+        if sweeper:
+            sweeper.cancel()
+            await asyncio.gather(sweeper, return_exceptions=True)
         if self._zone_store:
             await self._zone_store.close()
-        await super().stop()
+        client, self._redis_client = self._redis_client, None
+        if client is not None:
+            await client.aclose()
 
     async def process(
         self,
