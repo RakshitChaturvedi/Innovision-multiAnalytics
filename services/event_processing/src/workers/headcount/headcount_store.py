@@ -1,8 +1,8 @@
 import uuid
-import time
+from dataclasses import dataclass
 from datetime import datetime
+from typing import Protocol
 
-import redis.asyncio as aioredis
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
@@ -11,74 +11,176 @@ from sqlalchemy.ext.asyncio import (
 
 from .config import config
 
+_SNAPSHOT_NAMESPACE = uuid.UUID("b3a8d6a4-2f52-4c89-8d0e-5a4f6a1c9e07")
+
+
+@dataclass(frozen=True)
+class OpenBreach:
+    id: str
+    zone_id: str
+    camera_id: str
+    alert_published: bool
+
+
+class BreachRepository(Protocol):
+    async def load_open_breaches(self) -> list[OpenBreach]: ...
+
+    async def open_breach(
+        self,
+        zone_id: str,
+        camera_id: str,
+        count: int,
+        threshold: int,
+        timestamp: datetime,
+    ) -> OpenBreach: ...
+
+    async def mark_alert_published(self, breach_id: str) -> None: ...
+
+    async def resolve_breach(
+        self, breach_id: str, timestamp: datetime, reason: str
+    ) -> None: ...
+
+    async def write_snapshot(
+        self,
+        camera_id: str,
+        zone_id: str,
+        count: int,
+        rolling_avg: float,
+        timestamp: datetime,
+    ) -> None: ...
+
+
+def snapshot_id(zone_id: str, timestamp: datetime, interval: float) -> uuid.UUID:
+    bucket = int(timestamp.timestamp() // max(interval, 1e-6))
+    return uuid.uuid5(_SNAPSHOT_NAMESPACE, f"{zone_id}:{bucket}")
+
 
 class HeadcountStore:
+    """Postgres implementation of BreachRepository. Never queried per frame."""
 
     def __init__(self):
-        self._engine = create_async_engine(
-            config.DATABASE_URL
-        )
-
+        self._engine = create_async_engine(config.DATABASE_URL)
         self._session_factory = async_sessionmaker(
             self._engine,
             expire_on_commit=False,
         )
 
-        self._redis: aioredis.Redis | None = None
-        
-        # In-memory tracking of last snapshot write per zone to throttle writes
-        self._last_snapshot_write: dict[str, float] = {}
+    async def dispose(self) -> None:
+        await self._engine.dispose()
 
-    async def initialize(
-        self,
-        redis_client: aioredis.Redis,
-    ):
-        self._redis = redis_client
+    async def load_open_breaches(self) -> list[OpenBreach]:
+        async with self._session_factory() as session:
+            result = await session.execute(
+                text(
+                    """
+                    SELECT id, zone_id, camera_id, alert_published
+                    FROM headcount_breach_events
+                    WHERE status = 'open'
+                    """
+                )
+            )
+            return [
+                OpenBreach(
+                    id=str(r.id),
+                    zone_id=str(r.zone_id),
+                    camera_id=str(r.camera_id),
+                    alert_published=bool(r.alert_published),
+                )
+                for r in result.fetchall()
+            ]
 
-    async def update_rolling_average(
+    async def open_breach(
         self,
         zone_id: str,
+        camera_id: str,
         count: int,
+        threshold: int,
         timestamp: datetime,
-    ) -> float:
-        """
-        Pushes count to a sorted set, removes entries older than window,
-        and calculates rolling average.
-        """
-        key = f"{config.HEADCOUNT_CACHE_PREFIX}:{zone_id}:window"
-        now_ts = timestamp.timestamp()
-        
-        async with self._redis.pipeline(transaction=True) as pipe:
-            # Add new count with timestamp as score
-            pipe.zadd(key, {str(count) + ":" + str(uuid.uuid4()): now_ts})
-            # Remove older entries
-            cutoff = now_ts - config.ROLLING_WINDOW_SECONDS
-            pipe.zremrangebyscore(key, "-inf", cutoff)
-            # Fetch remaining items
-            pipe.zrange(key, 0, -1)
-            # Set TTL to prevent stale data buildup
-            pipe.expire(key, config.HEADCOUNT_CACHE_TTL)
-            
-            results = await pipe.execute()
-            
-        items = results[2]  # Output of zrange
-        
-        if not items:
-            return float(count)
-            
-        total_count = sum(int(item.decode().split(":")[0]) for item in items)
-        return total_count / len(items)
+    ) -> OpenBreach:
+        """Insert an open breach, or return the already-open one for the zone."""
+        new_id = str(uuid.uuid4())
+        async with self._session_factory() as session:
+            async with session.begin():
+                inserted = await session.execute(
+                    text(
+                        """
+                        INSERT INTO headcount_breach_events (
+                            id, zone_id, camera_id, count, threshold,
+                            alert_status, status, alert_published, timestamp
+                        )
+                        VALUES (
+                            CAST(:id AS uuid), CAST(:zone_id AS uuid),
+                            CAST(:camera_id AS uuid), :count, :threshold,
+                            'pending', 'open', false, :timestamp
+                        )
+                        ON CONFLICT (zone_id) WHERE status = 'open' DO NOTHING
+                        RETURNING id
+                        """
+                    ),
+                    {
+                        "id": new_id,
+                        "zone_id": zone_id,
+                        "camera_id": camera_id,
+                        "count": count,
+                        "threshold": threshold,
+                        "timestamp": timestamp,
+                    },
+                )
+                if inserted.fetchone() is not None:
+                    return OpenBreach(new_id, zone_id, camera_id, False)
 
-    async def should_write_snapshot(self, zone_id: str) -> bool:
-        """Throttles snapshot writes based on interval."""
-        now = time.time()
-        last_write = self._last_snapshot_write.get(zone_id, 0.0)
-        
-        if now - last_write >= config.SNAPSHOT_INTERVAL_SECONDS:
-            self._last_snapshot_write[zone_id] = now
-            return True
-            
-        return False
+                existing = await session.execute(
+                    text(
+                        """
+                        SELECT id, alert_published
+                        FROM headcount_breach_events
+                        WHERE zone_id = CAST(:zone_id AS uuid)
+                          AND status = 'open'
+                        """
+                    ),
+                    {"zone_id": zone_id},
+                )
+                row = existing.fetchone()
+                if row is None:
+                    raise RuntimeError(
+                        f"open_breach conflict but no open row zone={zone_id}"
+                    )
+                return OpenBreach(
+                    str(row.id), zone_id, camera_id, bool(row.alert_published)
+                )
+
+    async def mark_alert_published(self, breach_id: str) -> None:
+        async with self._session_factory() as session:
+            async with session.begin():
+                await session.execute(
+                    text(
+                        """
+                        UPDATE headcount_breach_events
+                        SET alert_published = true
+                        WHERE id = CAST(:id AS uuid)
+                        """
+                    ),
+                    {"id": breach_id},
+                )
+
+    async def resolve_breach(
+        self, breach_id: str, timestamp: datetime, reason: str
+    ) -> None:
+        async with self._session_factory() as session:
+            async with session.begin():
+                await session.execute(
+                    text(
+                        """
+                        UPDATE headcount_breach_events
+                        SET status = 'resolved',
+                            alert_status = 'resolved',
+                            resolved_at = :timestamp,
+                            resolution_reason = :reason
+                        WHERE id = CAST(:id AS uuid) AND status = 'open'
+                        """
+                    ),
+                    {"id": breach_id, "timestamp": timestamp, "reason": reason},
+                )
 
     async def write_snapshot(
         self,
@@ -94,132 +196,26 @@ class HeadcountStore:
                     text(
                         """
                         INSERT INTO headcount_snapshots (
-                            id,
-                            camera_id,
-                            zone_id,
-                            count,
-                            rolling_avg,
-                            timestamp
+                            id, camera_id, zone_id, count, rolling_avg, timestamp
                         )
                         VALUES (
-                            CAST(:id AS uuid),
-                            CAST(:camera_id AS uuid),
-                            CAST(:zone_id AS uuid),
-                            :count,
-                            :rolling_avg,
+                            CAST(:id AS uuid), CAST(:camera_id AS uuid),
+                            CAST(:zone_id AS uuid), :count, :rolling_avg,
                             :timestamp
                         )
+                        ON CONFLICT (id) DO NOTHING
                         """
                     ),
                     {
-                        "id": str(uuid.uuid4()),
+                        "id": str(
+                            snapshot_id(
+                                zone_id, timestamp, config.SNAPSHOT_INTERVAL_SECONDS
+                            )
+                        ),
                         "camera_id": camera_id,
                         "zone_id": zone_id,
                         "count": count,
                         "rolling_avg": rolling_avg,
-                        "timestamp": timestamp,
-                    },
-                )
-
-    async def write_breach_event(
-        self,
-        zone_id: str,
-        camera_id: str,
-        count: int,
-        threshold: int,
-        timestamp: datetime,
-    ) -> uuid.UUID:
-        event_id = uuid.uuid4()
-        
-        async with self._session_factory() as session:
-            async with session.begin():
-                await session.execute(
-                    text(
-                        """
-                        INSERT INTO headcount_breach_events (
-                            id,
-                            zone_id,
-                            camera_id,
-                            count,
-                            threshold,
-                            alert_status,
-                            timestamp
-                        )
-                        VALUES (
-                            CAST(:id AS uuid),
-                            CAST(:zone_id AS uuid),
-                            CAST(:camera_id AS uuid),
-                            :count,
-                            :threshold,
-                            'pending',
-                            :timestamp
-                        )
-                        """
-                    ),
-                    {
-                        "id": str(event_id),
-                        "zone_id": zone_id,
-                        "camera_id": camera_id,
-                        "count": count,
-                        "threshold": threshold,
-                        "timestamp": timestamp,
-                    },
-                )
-                
-        return event_id
-
-    async def get_open_breach(
-        self,
-        zone_id: str,
-    ) -> dict | None:
-        async with self._session_factory() as session:
-            result = await session.execute(
-                text(
-                    """
-                    SELECT
-                        id,
-                        alert_status
-                    FROM headcount_breach_events
-                    WHERE zone_id = CAST(:zone_id AS uuid)
-                      AND alert_status != 'resolved'
-                    ORDER BY timestamp DESC
-                    LIMIT 1
-                    """
-                ),
-                {
-                    "zone_id": zone_id,
-                },
-            )
-
-            row = result.fetchone()
-
-            if row is None:
-                return None
-
-            return {
-                "id": str(row.id),
-                "alert_status": row.alert_status,
-            }
-
-    async def resolve_breach_event(
-        self,
-        event_id: str,
-        timestamp: datetime,
-    ) -> None:
-        async with self._session_factory() as session:
-            async with session.begin():
-                await session.execute(
-                    text(
-                        """
-                        UPDATE headcount_breach_events
-                        SET
-                            alert_status = 'resolved',
-                            resolved_at = :timestamp
-                        WHERE id = CAST(:id AS uuid)
-                        """
-                    ),
-                    {
-                        "id": event_id,
                         "timestamp": timestamp,
                     },
                 )
