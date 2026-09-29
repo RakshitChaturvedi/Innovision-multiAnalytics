@@ -251,10 +251,29 @@ def check_services(r: Reporter, env: dict, uc: str | None = None) -> RegistryCli
     try:
         ids = client.by_uc(uc)
         r.ok("registry", f"{client.registry} answers, {len(ids)} camera(s) for {uc}")
+        check_test_cameras(r, client, ids, uc)
         return client
     except RegistryError as exc:
         r.fail("registry", str(exc), exc.fix)
         return None
+
+
+def check_test_cameras(r: Reporter, client: RegistryClient, ids: list[str], uc: str) -> None:
+    """WARN when the platform's built-in "Test Camera*" (video files) are still
+    subscribed to our use case: detection would process them too."""
+    if not ids:
+        return
+    try:
+        names = {c.id: c.name for c in client.active_cameras()}
+    except RegistryError as exc:
+        r.warn("test cameras", f"cannot read camera names: {exc}", exc.fix)
+        return
+    test = sorted(names[i] for i in ids if names.get(i, "").startswith("Test Camera"))
+    if test:
+        r.warn("test cameras", f"/cameras/by-uc/{uc} lists platform test camera(s): {', '.join(test)}",
+               "scripts\\unsubscribe_test_cameras.ps1 (docs/INTEGRATION.md), then restart Alert Management")
+    else:
+        r.ok("test cameras", f"none subscribed to {uc}")
 
 
 def main(argv=None) -> int:

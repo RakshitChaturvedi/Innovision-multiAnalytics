@@ -64,6 +64,18 @@ def test_register_cameras_create_and_update_paths(registry):
     assert [c["fps"] for c in registry.cameras.values()] == [10]
 
 
+def test_unsubscribe_test_cameras_dry_run_then_real(registry):
+    env = {"CAMERA_REGISTRY_URL": registry.url, "PLATFORM_AUTH_URL": registry.url,
+           "INTERNAL_SERVICE_TOKEN": SERVICE_TOKEN}
+    cam = registry.add("Test Camera UC1")
+    code, out = ps("unsubscribe_test_cameras.ps1", "-DryRun", env=env)
+    assert code == 0 and "DRY-RUN Test Camera UC1" in out, out
+    assert registry.cameras[cam["id"]]["use_cases"] == ["uc1"]
+    code, out = ps("unsubscribe_test_cameras.ps1", env=env, stdin=f"{ADMIN[0]}\n{ADMIN[1]}\n")
+    assert code == 0 and "-> []" in out, out
+    assert registry.cameras[cam["id"]]["use_cases"] == []
+
+
 def test_platform_db_refuses_platform_database():
     code, out = ps("platform_db.ps1",
                    env={"DATABASE_URL": fakes.userinfo_url("postgresql+asyncpg", "127.0.0.1:1",
