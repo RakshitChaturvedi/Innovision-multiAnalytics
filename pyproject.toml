@@ -16,6 +16,7 @@ dependencies = [
     "sqlalchemy>=2.0.50",
     "numpy>=2.5.3",
     "opencv-python>=5.0.0.93",
+    "pyyaml>=6.0",
 ]
 
 [tool.pytest.ini_options]
