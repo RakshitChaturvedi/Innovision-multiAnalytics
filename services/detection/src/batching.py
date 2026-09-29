@@ -55,6 +55,9 @@ class FrameItem:
     # can be deferred until the frame has actually been published.
     msg_id: str | bytes | None = None
 
+    # Stream the message came from (needed to XACK it).
+    stream: str | None = None
+
     enqueued_at: float = field(
         default_factory=time.monotonic
     )

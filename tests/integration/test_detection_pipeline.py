@@ -86,7 +86,7 @@ class TestDetectionPipelineIntegration(unittest.IsolatedAsyncioTestCase):
         # 5. Send message through consumer.process()
         msg_id = "1700000000000-0"
         msg_payload = {"data": frame_event.model_dump_json()}
-        await consumer._process_with_ack(msg_id, msg_payload)
+        await consumer._handle(consumer.streams[0], msg_id, msg_payload)
 
         # Verify frame_reference was used verbatim as the Redis key (no prefix)
         redis_mock.get.assert_called_with(frame_ref)
@@ -121,7 +121,7 @@ class TestDetectionPipelineIntegration(unittest.IsolatedAsyncioTestCase):
 
         # Verify message was ACKed in Redis after full pipeline completion
         redis_mock.xack.assert_called_once_with(
-            consumer.stream_key, consumer.group_name, msg_id
+            consumer.streams[0], consumer.group_name, msg_id
         )
 
         # 8. Clean up

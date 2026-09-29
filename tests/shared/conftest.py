@@ -1,0 +1,38 @@
+"""Shared fixtures: a REAL local redis-server (skips if the binary is missing)."""
+import shutil
+import socket
+import subprocess
+import time
+
+import pytest
+import redis.asyncio as aioredis
+
+
+@pytest.fixture(scope="session")
+def redis_port():
+    if shutil.which("redis-server") is None:
+        pytest.skip("redis-server not installed")
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    proc = subprocess.Popen(
+        ["redis-server", "--port", str(port), "--save", "", "--appendonly", "no"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    for _ in range(50):
+        try:
+            socket.create_connection(("127.0.0.1", port), timeout=0.2).close()
+            break
+        except OSError:
+            time.sleep(0.1)
+    yield port
+    proc.terminate()
+    proc.wait(timeout=5)
+
+
+@pytest.fixture
+async def redis(redis_port):
+    client = aioredis.from_url(f"redis://127.0.0.1:{redis_port}", decode_responses=False)
+    await client.flushall()
+    yield client
+    await client.aclose()

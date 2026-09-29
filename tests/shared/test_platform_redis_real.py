@@ -3,13 +3,9 @@
 Skipped when the redis-server binary is not installed.
 """
 import shutil
-import socket
-import subprocess
-import time
 from uuid import uuid4
 
 import pytest
-import redis.asyncio as aioredis
 
 from shared.alerting.publisher import AlertPublisher, build_platform_alert
 from shared.frames import FrameUnavailable, fetch_frame
@@ -19,34 +15,6 @@ from shared.platform_contracts.enums import FrameProvider
 pytestmark = pytest.mark.skipif(
     shutil.which("redis-server") is None, reason="redis-server not installed"
 )
-
-
-@pytest.fixture(scope="module")
-def redis_port():
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        port = s.getsockname()[1]
-    proc = subprocess.Popen(
-        ["redis-server", "--port", str(port), "--save", "", "--appendonly", "no"],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    )
-    for _ in range(50):
-        try:
-            socket.create_connection(("127.0.0.1", port), timeout=0.2).close()
-            break
-        except OSError:
-            time.sleep(0.1)
-    yield port
-    proc.terminate()
-    proc.wait(timeout=5)
-
-
-@pytest.fixture
-async def redis(redis_port):
-    client = aioredis.from_url(f"redis://127.0.0.1:{redis_port}", decode_responses=False)
-    await client.flushall()
-    yield client
-    await client.aclose()
 
 
 async def test_real_redis_fetch_verbatim_key(redis):

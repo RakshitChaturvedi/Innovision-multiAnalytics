@@ -34,7 +34,7 @@ class ZoneMonitorConsumer(BaseStreamConsumer):
     def __init__(self):
 
         super().__init__(
-            stream_key=config.DETECTIONS_STREAM,
+            streams=[config.DETECTIONS_STREAM],
             group_name=config.CONSUMER_GROUP,
             consumer_name=config.CONSUMER_NAME,
         )
@@ -80,6 +80,7 @@ class ZoneMonitorConsumer(BaseStreamConsumer):
         self,
         msg_id: str,
         data: dict,
+        stream: str,
     ) -> None:
 
         raw = (

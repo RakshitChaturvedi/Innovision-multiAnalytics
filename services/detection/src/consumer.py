@@ -81,12 +81,16 @@ class DetectionConsumer(BaseStreamConsumer):
     Consumes frames for the detection service.
     """
 
+    # Frames are acked only after batch inference, tracking, publishing and
+    # DB persistence (see _process_batch), never right after process().
+    auto_ack = False
+
     def __init__(self) -> None:
 
         stream_key = f"frames:{settings.test_camera_id}"
 
         super().__init__(
-            stream_key=stream_key,
+            streams=[stream_key],
             group_name=settings.consumer_group,
             consumer_name=settings.consumer_name,
         )
@@ -166,7 +170,7 @@ class DetectionConsumer(BaseStreamConsumer):
         logger.info(
             "detection_consumer_ready model=yolov11m stream=%s "
             "batch_size=%d timeout_ms=%d",
-            self.stream_key,
+            self.streams,
             settings.batch_size,
             settings.batch_timeout_ms,
         )
@@ -210,33 +214,11 @@ class DetectionConsumer(BaseStreamConsumer):
     # ACKNOWLEDGEMENT & STREAM PROCESSING
     # =========================================================
 
-    async def _process_with_ack(self, msg_id: str, data: dict) -> None:
-        """
-        Override BaseStreamConsumer._process_with_ack.
-
-        Do NOT auto-ack here: frames are enqueued to the BatchManager
-        and must only be acked after batch inference, tracking,
-        publishing, and database persistence have completed.
-        """
-        try:
-            await self.process(msg_id, data)
-        except Exception as e:
-            logger.error(f"{self.consumer_name} failed on {msg_id}: {e}")
-
-    async def ack(self, msg_id: str | bytes) -> None:
-        """
-        Explicitly acknowledge a processed message in Redis.
-        """
-        if self.redis is not None:
-            await self.redis.xack(self.stream_key, self.group_name, msg_id)
-        elif self._side_redis is not None:
-            await self._side_redis.xack(self.stream_key, self.group_name, msg_id)
-
     # =========================================================
     # PROCESS REDIS MESSAGE
     # =========================================================
 
-    async def process(self, msg_id, data: dict) -> None:
+    async def process(self, msg_id, data: dict, stream: str) -> None:
 
         raw = data.get(b"data") or data.get("data")
 
@@ -245,7 +227,7 @@ class DetectionConsumer(BaseStreamConsumer):
                 "frame_event_missing_data msg_id=%s", msg_id
             )
             # Malformed and unrecoverable: ack so it does not loop.
-            await self.ack(msg_id)
+            await self.ack(stream, msg_id)
             return
 
         if isinstance(raw, bytes):
@@ -257,7 +239,7 @@ class DetectionConsumer(BaseStreamConsumer):
             logger.error(
                 "frame_event_invalid msg_id=%s error=%s", msg_id, exc
             )
-            await self.ack(msg_id)
+            await self.ack(stream, msg_id)
             return
 
         # ---------------- fetch ----------------
@@ -288,7 +270,7 @@ class DetectionConsumer(BaseStreamConsumer):
                 frame_event.frame_reference,
             )
             # Corrupt frames are permanent: ack and move on.
-            await self.ack(msg_id)
+            await self.ack(stream, msg_id)
             return
 
         await self._batch_manager.add(
@@ -296,6 +278,7 @@ class DetectionConsumer(BaseStreamConsumer):
                 frame_event=frame_event,
                 frame=frame,
                 msg_id=msg_id,
+                stream=stream,
             )
         )
 
@@ -384,8 +367,8 @@ class DetectionConsumer(BaseStreamConsumer):
                 self._build_rows(frame_event, filtered, latency_ms)
             )
 
-            if item.msg_id is not None:
-                acked.append(item.msg_id)
+            if item.msg_id is not None and item.stream is not None:
+                acked.append((item.stream, item.msg_id))
 
             logger.info(
                 "frame_processed model=yolov11m camera_id=%s seq=%d "
@@ -399,11 +382,12 @@ class DetectionConsumer(BaseStreamConsumer):
         await self._write_to_db(db_rows)
 
         # Only now is the frame durably handled.
-        for msg_id in acked:
+        for stream, msg_id in acked:
             try:
-                await self.ack(msg_id)
+                await self.ack(stream, msg_id)
             except Exception:
-                logger.warning("ack_failed msg_id=%s", msg_id)
+                # Not acked -> stays pending and is redelivered by reclaim.
+                logger.warning("ack_failed stream=%s msg_id=%s", stream, msg_id)
 
     # =========================================================
     # DATABASE

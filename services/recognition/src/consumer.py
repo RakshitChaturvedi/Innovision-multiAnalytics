@@ -54,7 +54,7 @@ SNAPSHOTS_BUCKET = "snapshots"
 class RecognitionConsumer(BaseStreamConsumer):
     def __init__(self) -> None:
         super().__init__(
-            stream_key=config.DETECTIONS_STREAM,
+            streams=[config.DETECTIONS_STREAM],
             group_name=config.CONSUMER_GROUP,
             consumer_name=config.CONSUMER_NAME,
         )
@@ -100,7 +100,7 @@ class RecognitionConsumer(BaseStreamConsumer):
         await super().stop()
         await self._engine.dispose()
 
-    async def process(self, msg_id: str, data: dict) -> None:
+    async def process(self, msg_id: str, data: dict, stream: str) -> None:
         raw = data.get(b"data") or data.get("data")
         if raw is None:
             logger.error("detection_event_missing_data msg_id=%s", msg_id)

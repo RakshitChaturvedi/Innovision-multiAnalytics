@@ -31,7 +31,7 @@ class SmokeTestConsumer(BaseStreamConsumer):
         self.received_event: Optional[FrameEvent] = None
         self.received_msg_id: Optional[str] = None
 
-    async def process(self, msg_id: str, data: dict[str, Any]) -> None:
+    async def process(self, msg_id: str, data: dict[str, Any], stream: str) -> None:
         raw = data.get(b"data") or data.get("data")
         if isinstance(raw, bytes):
             raw = raw.decode()
@@ -58,7 +58,7 @@ async def run() -> None:
     await producer_redis.aclose()
 
     consumer = SmokeTestConsumer(
-        stream_key=STREAM_NAME,
+        streams=[STREAM_NAME],
         group_name=CONSUMER_GROUP,
         consumer_name=CONSUMER_NAME,
         batch_size=1,

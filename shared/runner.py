@@ -44,15 +44,19 @@ async def run_consumers(name: str, consumers: list) -> None:
     finally:
         logger.info("%s_service_stopping", name)
         waiter.cancel()
+
+        # Graceful first: stop() lets each consumer finish in-flight work.
+        # Cancelling start() first would tear that work down mid-message.
+        results = await asyncio.gather(
+            *(c.stop() for c in consumers), return_exceptions=True
+        )
+        for c, res in zip(consumers, results):
+            if isinstance(res, BaseException):
+                logger.error("%s_consumer_stop_failed consumer=%r error=%r", name, c, res)
+
         for r in runners:
             r.cancel()
         await asyncio.gather(*runners, waiter, return_exceptions=True)
-
-        for c in consumers:
-            try:
-                await c.stop()
-            except Exception:
-                logger.exception("%s_consumer_stop_failed consumer=%r", name, c)
 
         logger.info("%s_service_stopped", name)
 

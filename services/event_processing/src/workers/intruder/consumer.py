@@ -34,7 +34,7 @@ class IntruderConsumer(BaseStreamConsumer):
     def __init__(self):
 
         super().__init__(
-            stream_key=config.ZONE_EVENTS_STREAM,
+            streams=[config.ZONE_EVENTS_STREAM],
             group_name=config.CONSUMER_GROUP,
             consumer_name=config.CONSUMER_NAME,
         )
@@ -72,6 +72,7 @@ class IntruderConsumer(BaseStreamConsumer):
         self,
         msg_id: str,
         data: dict,
+        stream: str,
     ) -> None:
 
         raw = (

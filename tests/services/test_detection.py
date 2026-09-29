@@ -136,7 +136,8 @@ class TestDetectionConsumer(unittest.IsolatedAsyncioTestCase):
         from services.detection.src.consumer import DetectionConsumer
 
         consumer = DetectionConsumer()
-        self.assertEqual(consumer.stream_key, f"frames:{settings.test_camera_id}")
+        self.assertEqual(consumer.streams, [f"frames:{settings.test_camera_id}"])
+        self.assertFalse(consumer.auto_ack)
 
     @patch("services.detection.src.consumer.create_async_engine")
     async def test_consumer_manual_ack(self, mock_engine):
@@ -145,9 +146,10 @@ class TestDetectionConsumer(unittest.IsolatedAsyncioTestCase):
         consumer = DetectionConsumer()
         consumer.redis = AsyncMock()
 
-        await consumer.ack("1234-0")
+        stream = consumer.streams[0]
+        await consumer.ack(stream, "1234-0")
         consumer.redis.xack.assert_called_once_with(
-            consumer.stream_key, consumer.group_name, "1234-0"
+            stream, consumer.group_name, "1234-0"
         )
 
     @patch("services.detection.src.consumer.create_async_engine")
@@ -158,8 +160,9 @@ class TestDetectionConsumer(unittest.IsolatedAsyncioTestCase):
         consumer.redis = AsyncMock()
         consumer.process = AsyncMock()
 
-        await consumer._process_with_ack("1234-0", {"data": "{}"})
-        consumer.process.assert_called_once_with("1234-0", {"data": "{}"})
+        stream = consumer.streams[0]
+        await consumer._handle(stream, "1234-0", {"data": "{}"})
+        consumer.process.assert_called_once_with("1234-0", {"data": "{}"}, stream)
         # Verify redis.xack was NOT called prematurely
         consumer.redis.xack.assert_not_called()
 
