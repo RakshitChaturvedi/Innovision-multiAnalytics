@@ -21,3 +21,11 @@ dependencies = [
 [tool.pytest.ini_options]
 pythonpath = ["."]
 asyncio_mode = "auto"
+
+[dependency-groups]
+# Needed by the real-Postgres tests and the Alembic migrations (0003 imports pgvector).
+dev = [
+    "asyncpg>=0.30.0",
+    "psycopg2-binary>=2.9.10",
+    "pgvector>=0.3.6",
+]

@@ -97,6 +97,76 @@ jobs:
           REDIS_PORT: 6379
         run: uv run python -m scripts.smoke_test
 
+  test-full:
+    # Whole suite against real Postgres (pgvector) and Redis.
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: analytics
+          POSTGRES_PASSWORD: analytics
+          POSTGRES_DB: innovision_analytics
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U analytics -d innovision_analytics"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql+asyncpg://analytics:analytics@localhost:5432/innovision_analytics
+      TEST_DATABASE_URL: postgresql+asyncpg://analytics:analytics@localhost:5432/innovision_analytics_test
+      TEST_REDIS_URL: redis://localhost:6379/15
+      HEADCOUNT_TEST_DATABASE_URL: postgresql+asyncpg://analytics:analytics@localhost:5432/innovision_hc_test
+      HEADCOUNT_TEST_REDIS_URL: redis://localhost:6379/14
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      # Some tests start their own throwaway redis-server, so the binary is
+      # needed; the packaged service is stopped to keep port 6379 free.
+      - name: Install redis-server binary
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y redis-server
+          sudo systemctl stop redis-server || true
+
+      - name: Create headcount test database
+        run: >-
+          PGPASSWORD=analytics psql -h localhost -U analytics -d postgres
+          -c "CREATE DATABASE innovision_hc_test"
+
+      - name: Migrate (upgrade head, downgrade base, upgrade head)
+        run: |
+          uv run alembic -c migrations/alembic.ini upgrade head
+          uv run alembic -c migrations/alembic.ini downgrade base
+          uv run alembic -c migrations/alembic.ini upgrade head
+
+      - name: Full test suite
+        run: uv run pytest -q -rs
+
 env:
   REDIS_HOST: localhost
   REDIS_PORT: 6379
