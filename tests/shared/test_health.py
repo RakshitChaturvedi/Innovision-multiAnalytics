@@ -53,7 +53,8 @@ async def checks(redis_port):
     try:
         await asyncio.wait_for(d_check(), 5)
     except Exception as exc:
-        await r_close(); await d_close()
+        await r_close()
+        await d_close()
         pytest.skip(f"no Postgres: {exc}")
     yield r_check, d_check
     await r_close()
@@ -78,7 +79,8 @@ async def test_healthy_returns_200_with_stats(checks):
     try:
         status, body = await get(srv.port)
     finally:
-        await srv.stop(); task.cancel()
+        await srv.stop()
+        task.cancel()
     assert status == 200
     assert body["status"] == "ok"
     assert body["redis"] == {"ok": True} and body["db"] == {"ok": True}
@@ -97,7 +99,9 @@ async def test_redis_down_returns_503(checks):
     try:
         status, body = await get(srv.port)
     finally:
-        await srv.stop(); task.cancel(); await r_close()
+        await srv.stop()
+        task.cancel()
+        await r_close()
     assert status == 503
     assert body["redis"]["ok"] is False and "error" in body["redis"]
     assert body["db"]["ok"] is True
@@ -113,7 +117,9 @@ async def test_db_down_returns_503(checks):
     try:
         status, body = await get(srv.port)
     finally:
-        await srv.stop(); task.cancel(); await d_close()
+        await srv.stop()
+        task.cancel()
+        await d_close()
     assert status == 503
     assert body["db"]["ok"] is False and body["redis"]["ok"] is True
 
@@ -147,7 +153,8 @@ async def test_hung_dependency_times_out_as_503(checks, monkeypatch):
     try:
         status, body = await asyncio.wait_for(get(srv.port), 5)
     finally:
-        await srv.stop(); task.cancel()
+        await srv.stop()
+        task.cancel()
     assert status == 503 and "TimeoutError" in body["db"]["error"]
 
 

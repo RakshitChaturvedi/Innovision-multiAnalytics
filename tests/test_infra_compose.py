@@ -34,7 +34,9 @@ def test_app_services_have_health_endpoint_healthcheck(service, port):
     assert match, f"no {service} service"
     hc = re.search(r"^    healthcheck:\n((?:      .*\n|\s*#.*\n)+)", match.group(1), re.M)
     assert hc, f"{service} has no healthcheck"
-    test_line = next(l for l in hc.group(1).splitlines() if l.strip().startswith("test:"))
+    test_line = next(
+        line for line in hc.group(1).splitlines() if line.strip().startswith("test:")
+    )
     # python urllib against /health (curl is not in the service images)
     assert test_line.strip().startswith('test: ["CMD", "python", "-c"')
     assert f"http://127.0.0.1:{port}/health" in test_line
