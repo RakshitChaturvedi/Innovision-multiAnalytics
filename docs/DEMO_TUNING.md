@@ -1,7 +1,8 @@
 # Demo tuning
 
 Settings that decide how the pipeline *feels* in a live demo: how fast a
-headcount breach opens and resolves, and what a CPU-only box can keep up with.
+headcount breach opens and resolves, which faces recognition accepts, and what
+a CPU-only box can keep up with.
 Every variable below can go in `.env` (environment variables win over `.env`).
 
 ## Headcount: when does a breach open and resolve?
@@ -88,6 +89,101 @@ briefly occluded or double-detected at the limit can open or resolve a breach.
   whose head region contains it and whose box top is nearest. Widen the head
   region only if tracks with visible faces record nothing
   (`face_no_face_in_head_region` in the recognition stats).
+
+## Recognition: face quality gates
+
+**The platform ingestion scales every source to 1920x1080.** A 640x360 phone
+stream and a native 1080p camera both reach recognition as 1080p frames, so
+the pixel size of a face says little about how much real detail it has. Tune
+the gates from what the service reports, not from the source resolution.
+
+### Is recognition rejecting everything?
+
+Every face track that is due for recognition but ends without a row is
+counted in the periodic `recognition_worker_1 stats {...}` line (INFO), in
+total and under `per_camera`:
+
+| Counter | Meaning | Knob |
+|---|---|---|
+| `crop_none` | face box too small to crop (under 10 px) | detection |
+| `precheck_too_small` | crop's short side < min face size | `DEFAULT_MIN_FACE_SIZE_PX` |
+| `precheck_too_blurry` | blur score < threshold | `DEFAULT_BLUR_THRESHOLD` |
+| `face_no_face`, `face_no_face_in_head_region`, `face_ambiguous` | the model found no usable face for this track | `RECOGNITION_HEAD_*` |
+| `quality_pose` | yaw > `DEFAULT_POSE_YAW_MAX` or pitch > `DEFAULT_POSE_PITCH_MAX` | pose limits |
+| `quality_detector_confidence` | face detector score < `DEFAULT_DETECTOR_CONFIDENCE_MIN` | |
+| `quality_other` | no usable embedding | |
+| `rows_written` | recognition rows actually inserted | |
+
+The first rejection of each reason per camera is also logged at INFO with its
+value, e.g.
+`recognition_rejected camera=... track=12 reason=precheck_too_blurry detail=too_blurry:9.8`;
+repeats are DEBUG. If a camera has face tracks due but writes no row for
+`RECOGNITION_STARVED_AFTER_S` (default 120 s of event time), it logs one
+`WARNING recognition_starved camera=... top_reason=...` per outage, and
+`recognition_recovered` once a row is written again.
+
+### `DEFAULT_BLUR_THRESHOLD` (default 15)
+
+The blur score is the variance of the Laplacian of the face crop after it is
+converted to grayscale and resized to `BLUR_EVAL_SIZE` x `BLUR_EVAL_SIZE`
+(default 112) with a light Gaussian pre-blur. Resizing makes the score about
+the same for the same face at any resolution. Before this change the score
+was taken on the raw crop and *fell* as a face got more pixels: the same face
+scored 203 at 1280x720 and 55 at 1920x1080, under the old threshold of 100.
+**Scores on the new scale are much smaller; never reuse a threshold from the
+old scale.**
+
+Calibration on a synthetic face (`python -m tools.calibrate_blur`, JPEG q85):
+
+| Case | Old raw score | New score | Default 15 |
+|---|---:|---:|---|
+| sharp, 640x360 source (72 px face) | 2554 | 62.3 | pass |
+| sharp, 1280x720 source (144 px) | 2386 | 67.3 | pass |
+| sharp, 1920x1080 source (216 px) | 2049 | 73.9 | pass |
+| Gaussian sigma 3, 640x360 | 9.3 | 0.5 | reject |
+| Gaussian sigma 3, 1280x720 | 5.5 | 2.9 | reject |
+| Gaussian sigma 3, 1920x1080 | 4.9 | 9.5 | reject |
+| ~60 px of real detail upscaled to 400 px (low-res phone) | 5.9 | 28.8 | pass |
+| sharp 640x360 source, platform-scaled to 1920x1080 | **72.8 (rejected at 100)** | 38.4 | pass |
+| sharp 1280x720 source, platform-scaled to 1920x1080 | 335 | 59.7 | pass |
+
+The upscaled low-detail face scores about half of a sharp one: raise the
+threshold towards 30 and those are the first faces to be rejected.
+
+How to tune:
+
+1. Run with the default and read the `recognition_rejected ...
+   reason=precheck_too_blurry detail=too_blurry:<score>` lines and the
+   `precheck_too_blurry` / `rows_written` counters per camera.
+2. Save a few face crops you consider good and bad, and score them:
+   `python -m tools.calibrate_blur --image good1.jpg bad1.jpg`.
+3. Set the threshold between the two groups. Per camera:
+   `UPDATE camera_config SET blur_threshold = 12 WHERE camera_id = '...'`,
+   then publish the camera id on `cache:camera_config:invalidate` (or wait
+   60 s for the cache to expire). For all cameras without a row:
+   `DEFAULT_BLUR_THRESHOLD=12`.
+
+`camera_config.blur_threshold` overrides the environment default.
+Migration `0008_blur_recalibration` moves rows still at exactly 100.0 (the old
+default) to 15 and leaves other values alone. At startup, recognition logs
+`WARNING camera_blur_threshold_legacy camera_id=...` for every camera still at
+100.0: on the new scale that rejects nearly every face.
+
+`BLUR_EVAL_SIZE` changes the score scale too. Leave it at 112 unless you
+recalibrate the threshold with `tools/calibrate_blur.py --eval-size N`.
+
+### `DEFAULT_MIN_FACE_SIZE_PX` (default 40)
+
+Compared with the short side of the face crop **in the 1920x1080 frame**, not
+in the source. A face 40 px tall in a 640x360 source is 120 px after the
+platform scaling, and passes easily with no more real detail. So this gate
+does not protect you from low-resolution sources; the blur score does.
+
+* Raise it (e.g. 60-80) to ignore far-away people on a native 1080p camera.
+* Lower it only if `precheck_too_small` dominates and the faces are real and
+  sharp. The recognition model aligns faces to 112x112, so very small crops
+  are upscaled and give weaker embeddings.
+* Per camera: `camera_config.min_face_size_px`.
 
 ## CPU-only boxes
 
