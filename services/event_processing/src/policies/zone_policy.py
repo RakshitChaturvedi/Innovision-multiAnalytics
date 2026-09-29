@@ -59,7 +59,14 @@ def detect_transitions(
     zones_by_id: dict[str, dict],
     entry_times: dict[str, datetime],
     now: datetime,
+    dwell_notified: set[str] | None = None,
 ) -> list[ZoneTransition]:
+    """
+    `now` is the event time. DWELL is emitted once per zone: zones already in
+    `dwell_notified` are skipped.
+    """
+
+    dwell_notified = dwell_notified or set()
 
     transitions: list[ZoneTransition] = []
 
@@ -104,7 +111,7 @@ def detect_transitions(
 
         zone = zones_by_id.get(zone_id)
 
-        if not zone:
+        if not zone or zone_id in dwell_notified:
             continue
 
         entry_time = entry_times.get(zone_id)

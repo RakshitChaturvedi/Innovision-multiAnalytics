@@ -19,11 +19,18 @@ def script():
     return ScriptDirectory.from_config(cfg)
 
 
-def test_single_head_is_0006(script):
-    assert script.get_heads() == ["0006_reliability"]
+def test_single_head_is_0007(script):
+    assert script.get_heads() == ["0007_zone_events_frame_ref"]
 
 
-def test_0005_headcount_is_directly_below_head(script):
+def test_0006_reliability_is_directly_below_head(script):
+    assert (
+        script.get_revision("0007_zone_events_frame_ref").down_revision
+        == "0006_reliability"
+    )
+
+
+def test_0005_headcount_is_directly_below_0006(script):
     assert script.get_revision("0006_reliability").down_revision == "0005_headcount"
 
 
@@ -36,7 +43,7 @@ def test_0004_intruder_parents_exist(script):
 
 def test_whole_graph_walks_to_base(script):
     revs = list(script.walk_revisions())
-    assert {r.revision for r in revs} >= {"0001", "0005_headcount", "0006_reliability"}
+    assert {r.revision for r in revs} >= {"0001", "0005_headcount", "0006_reliability", "0007_zone_events_frame_ref"}
 
 
 def test_env_uses_analytics_version_table_in_both_modes():
