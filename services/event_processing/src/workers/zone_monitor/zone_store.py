@@ -90,7 +90,10 @@ class ZoneStore:
         self,
         session_factory=None,
         clock=time.monotonic,
+        stopping: asyncio.Event | None = None,
     ):
+        # Shared with the owning consumer: set when the service stops.
+        self._stopping = stopping if stopping is not None else asyncio.Event()
 
         # camera_id -> (expires_at, zones)
         self._local_cache: dict[
@@ -124,10 +127,12 @@ class ZoneStore:
             supervise(
                 "zone_invalidation_listener",
                 self._listen_invalidations,
+                stopping=self._stopping,
             )
         )
 
     async def close(self):
+        self._stopping.set()  # a listener dying from here on is not restarted
         if self._listener_task:
             self._listener_task.cancel()
             await asyncio.gather(

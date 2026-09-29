@@ -28,7 +28,7 @@ from shared.errors import PermanentError
 from shared.frames import FrameUnavailable, fetch_frame
 from shared.schemas.consumer import BaseStreamConsumer
 from shared.schemas.events import FrameEvent
-from shared.storage.storage_minio_client import StorageClient
+from shared.storage.storage_minio_client import StorageClient, open_frame_storage
 
 from .batching import BatchManager, FrameItem
 from .camera_discovery import (
@@ -164,7 +164,10 @@ class DetectionConsumer(BaseStreamConsumer):
         )
 
         self._side_redis: aioredis.Redis | None = side_redis
-        self._storage = storage if storage is not None else StorageClient()
+        # Injected (tests) or opened once in start(): MINIO_* is read once and
+        # a missing/unreachable MinIO is logged once, never per frame.
+        self._storage: StorageClient | None = storage
+        self._storage_injected = storage is not None
         self._publisher: DetectionPublisher | None = None
 
         self._progress: dict[str, CameraProgress] = {}
@@ -267,6 +270,11 @@ class DetectionConsumer(BaseStreamConsumer):
         self._detector = YOLODetector(
             self._model_loader.get_model()
         )
+
+        # Cold frame store (MinIO). None = not configured: redis misses are
+        # FrameUnavailable (acked + counted as frame_expired).
+        if not self._storage_injected:
+            self._storage = await open_frame_storage()
 
         # 2. One shared connection for publishing + frame fetch.
         self._side_redis = aioredis.from_url(
@@ -671,7 +679,7 @@ class DetectionConsumer(BaseStreamConsumer):
             if ack_key:
                 acked.append(ack_key)
 
-            logger.info(
+            logger.debug(
                 "frame_processed model=yolov11m camera_id=%s seq=%d "
                 "tracks=%d latency_ms=%.1f%s",
                 frame_event.camera_id,

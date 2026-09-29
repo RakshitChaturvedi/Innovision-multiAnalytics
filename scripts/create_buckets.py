@@ -7,8 +7,8 @@ load_dotenv()
 def create_buckets():
     client = Minio(
         os.getenv("MINIO_ENDPOINT", "localhost:9000"),
-        access_key=os.getenv("MINIO_ACCESS_KEY", "admin"),
-        secret_key=os.getenv("MINIO_SECRET_KEY", "password123"),
+        access_key=os.getenv("MINIO_ACCESS_KEY", "minioadmin"),
+        secret_key=os.getenv("MINIO_SECRET_KEY", "minioadmin"),
         secure=os.getenv("MINIO_SECURE", "false").lower() == "true",
     )
 

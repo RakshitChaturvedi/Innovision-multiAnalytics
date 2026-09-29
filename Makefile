@@ -1,8 +1,15 @@
 .PHONY: infra migrate test health demo
 
-COMPOSE_DEV := docker compose -f infra/docker-compose.dev.yml
+# Compose reads variables from --env-file; without it, compose looks for .env
+# next to the compose file (infra/), not in the repo root, and silently falls
+# back to its defaults.
+COMPOSE_DEV := docker compose --env-file .env -f infra/docker-compose.dev.yml
 
-infra:
+.env:
+	cp .env.example .env
+	@echo "created .env from .env.example"
+
+infra: .env
 	$(COMPOSE_DEV) up -d
 
 migrate:

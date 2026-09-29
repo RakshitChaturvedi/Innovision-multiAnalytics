@@ -76,7 +76,7 @@ Internal events (`DetectionEvent`, `RecognitionEvent`, `ZoneEvent`) are owned by
 ## 4. Local commands
 
 ```bash
-make infra        # docker compose -f infra/docker-compose.dev.yml up -d  (redis, postgres+pgvector, minio, bucket init)
+make infra        # docker compose --env-file .env -f infra/docker-compose.dev.yml up -d  (redis, postgres+pgvector, minio, bucket init; creates .env from .env.example if missing)
 make migrate      # alembic -c migrations/alembic.ini upgrade head   (DATABASE_URL -> innovision_analytics)
 make test         # pytest -q
 make demo         # feeder + all services + alert sink + viewer (see tools/)

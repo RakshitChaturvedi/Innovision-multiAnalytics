@@ -1,63 +1,48 @@
-import os
+from typing import ClassVar
+
+from pydantic import Field
+
+from shared.service_settings import ServiceSettings
 
 
-class IntruderConfig:
-    REDIS_HOST = os.environ.get(
-        "REDIS_HOST",
-        "redis",
+class IntruderConfig(ServiceSettings):
+    """Environment first, then .env, then these defaults."""
+
+    REDIS_HOST: str = "redis"
+    REDIS_PORT: int = 6379
+
+    DATABASE_URL: str = (
+        "postgresql+asyncpg://analytics:analytics@postgres:5432/innovision_analytics"
     )
 
-    REDIS_PORT = int(
-        os.environ.get(
-            "REDIS_PORT",
-            "6379",
-        )
+    ZONE_EVENTS_STREAM: ClassVar[str] = "events:zone"
+
+    ALERTS_STREAM: ClassVar[str] = "alerts:live"
+
+    CONSUMER_GROUP: ClassVar[str] = "intruder_group"
+
+    CONSUMER_NAME: str = Field(
+        default="intruder_worker_1", validation_alias="INTRUDER_CONSUMER_NAME"
     )
 
-    DATABASE_URL = os.environ.get(
-        "DATABASE_URL",
-        "postgresql+asyncpg://postgres:postgres@postgres:5432/innovision_analytics",
-    )
+    ZONE_EVENTS_MAXLEN: ClassVar[int] = 10000
 
-    ZONE_EVENTS_STREAM = "events:zone"
-
-    ALERTS_STREAM = "alerts:live"
-
-    CONSUMER_GROUP = "intruder_group"
-
-    CONSUMER_NAME = os.environ.get(
-        "INTRUDER_CONSUMER_NAME",
-        "intruder_worker_1",
-    )
-
-    ZONE_EVENTS_MAXLEN = 10000
-
-    ALERTS_MAXLEN = 10000
+    ALERTS_MAXLEN: ClassVar[int] = 10000
 
     # Recognition can arrive slightly before or after
     # the zone event. The worker retries briefly.
-    RECOGNITION_LOOKUP_RETRIES = int(
-        os.environ.get(
-            "INTRUDER_RECOGNITION_LOOKUP_RETRIES",
-            "5",
-        )
+    RECOGNITION_LOOKUP_RETRIES: int = Field(
+        default=5, validation_alias="INTRUDER_RECOGNITION_LOOKUP_RETRIES"
     )
 
-    RECOGNITION_LOOKUP_DELAY_SECONDS = float(
-        os.environ.get(
-            "INTRUDER_RECOGNITION_LOOKUP_DELAY_SECONDS",
-            "0.3",
-        )
+    RECOGNITION_LOOKUP_DELAY_SECONDS: float = Field(
+        default=0.3, validation_alias="INTRUDER_RECOGNITION_LOOKUP_DELAY_SECONDS"
     )
 
     # Only recognitions in [zone_ts - MAX_AGE, zone_ts + FUTURE] count.
-    RECOGNITION_MAX_AGE_S = float(
-        os.environ.get("RECOGNITION_MAX_AGE_S", "30")
-    )
+    RECOGNITION_MAX_AGE_S: float = 30.0
 
-    RECOGNITION_FUTURE_S = float(
-        os.environ.get("RECOGNITION_FUTURE_S", "5")
-    )
+    RECOGNITION_FUTURE_S: float = 5.0
 
 
 config = IntruderConfig()

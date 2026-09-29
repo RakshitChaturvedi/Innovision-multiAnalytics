@@ -6,32 +6,21 @@
 import shutil
 import socket
 import subprocess
-import sys
 import time
-import types
 import uuid
-from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
-import cv2
-import numpy as np
 import pytest
 import redis.asyncio as aioredis
 
-# services/recognition/src/model_loader.py imports insightface at module level
-# (model loading is not to be touched). Provide an import stub if the package
-# is not installed; the model itself is always a fake in these tests.
-try:  # pragma: no cover
-    import insightface  # noqa: F401
-except ImportError:
-    pkg = types.ModuleType("insightface")
-    app = types.ModuleType("insightface.app")
-    common = types.ModuleType("insightface.app.common")
-    app.FaceAnalysis = type("FaceAnalysis", (), {})
-    common.Face = type("Face", (), {})
-    app.common = common
-    pkg.app = app
-    sys.modules.update({"insightface": pkg, "insightface.app": app, "insightface.app.common": common})
+from tests.recognition_fakes import (  # noqa: F401  (re-exported for the tests)
+    FakeFace,
+    FrameFaceLoader,
+    face_at,
+    jpeg,
+    person_track,
+    unit,
+)
 
 
 @pytest.fixture(scope="session")
@@ -62,26 +51,6 @@ async def redis(redis_port):
     await client.flushall()
     yield client
     await client.aclose()
-
-
-# ----------------------------------------------------------------- fake model
-
-
-@dataclass
-class FakeFace:
-    bbox: tuple = (5.0, 5.0, 60.0, 60.0)
-    det_score: float = 0.99
-    pose: tuple = (0.0, 0.0, 0.0)  # InsightFace order: [pitch, yaw, roll]
-    embedding: np.ndarray = field(default_factory=lambda: _unit(0))
-
-
-def _unit(i: int, dim: int = 512) -> np.ndarray:
-    v = np.zeros(dim, dtype=np.float32)
-    v[i] = 1.0
-    return v
-
-
-unit = _unit
 
 
 # ------------------------------------------------------------------- fake DB
@@ -167,14 +136,6 @@ class FakeSession:
 
 
 # ------------------------------------------------------------- event helpers
-
-
-def jpeg(w=320, h=240) -> bytes:
-    rng = np.random.default_rng(1)
-    img = rng.integers(0, 255, (h, w, 3), dtype=np.uint8)
-    ok, buf = cv2.imencode(".jpg", img)
-    assert ok
-    return buf.tobytes()
 
 
 def detection_event(camera_id=None, frame_seq=1, provider="redis", ref=None, tracks=None, ts=None) -> dict:

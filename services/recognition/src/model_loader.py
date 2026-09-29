@@ -8,6 +8,7 @@ detection worker's output entirely (DetectionEvent carries no profile
 field). Pack identity is configurable via RECOGNITION_MODEL_PACK, not
 branched in code.
 """
+import glob
 import logging
 import os
 
@@ -17,6 +18,32 @@ from insightface.app.common import Face
 from .config import config
 
 logger = logging.getLogger(__name__)
+
+
+class ModelPackMissing(RuntimeError):
+    """The InsightFace model pack folder is missing or holds no .onnx models."""
+
+
+def model_pack_path(model_root: str, pack: str) -> str:
+    """Where InsightFace's FaceAnalysis(name=pack, root=model_root) loads from."""
+    return os.path.join(model_root, "models", pack)
+
+
+def check_model_pack(model_root: str, pack: str) -> str:
+    """Return the pack folder, or raise ModelPackMissing with a clear message."""
+    path = model_pack_path(model_root, pack)
+    if not os.path.isdir(path):
+        message = (
+            f"InsightFace model pack '{pack}' not found: folder {path} does not exist. "
+            f"InsightFace loads MODEL_ROOT/models/<RECOGNITION_MODEL_PACK>; "
+            f"MODEL_ROOT={model_root!r} must be the folder that CONTAINS 'models/{pack}'."
+        )
+    elif not glob.glob(os.path.join(path, "*.onnx")):
+        message = f"InsightFace model pack '{pack}' at {path} contains no .onnx files."
+    else:
+        return path
+    logger.error("model_pack_missing %s", message)
+    raise ModelPackMissing(message)
 
 
 class RecognitionModelLoader:
@@ -30,11 +57,14 @@ class RecognitionModelLoader:
         self._app: FaceAnalysis | None = None
 
     def preload(self) -> None:
-        """Loads the configured pack. Blocks until complete. Idempotent."""
+        """Loads the configured pack. Blocks until complete. Idempotent.
+        Raises ModelPackMissing (startup fails) if the pack folder is absent."""
         if self._app is not None:
             return
 
-        pack_path = os.path.join(config.MODEL_ROOT, config.RECOGNITION_MODEL_PACK)
+        # InsightFace loads FaceAnalysis(name, root) from root/models/<name>
+        # (and silently tries to DOWNLOAD it when that folder is missing).
+        pack_path = check_model_pack(config.MODEL_ROOT, config.RECOGNITION_MODEL_PACK)
         logger.info(
             "loading_insightface_pack pack=%s path=%s gpu=%s",
             config.RECOGNITION_MODEL_PACK, pack_path, config.USE_GPU,
@@ -54,7 +84,9 @@ class RecognitionModelLoader:
         app.prepare(ctx_id=0 if config.USE_GPU else -1, det_size=config.DET_SIZE)
 
         self._app = app
-        logger.info("insightface_pack_loaded pack=%s", config.RECOGNITION_MODEL_PACK)
+        logger.info(
+            "insightface_pack_loaded pack=%s path=%s", config.RECOGNITION_MODEL_PACK, pack_path,
+        )
 
     def get_model(self) -> FaceAnalysis:
         if self._app is None:
@@ -63,23 +95,20 @@ class RecognitionModelLoader:
             )
         return self._app
 
-    def detect_best_face(self, face_crop) -> Face | None:
+    def detect_faces(self, face_crop) -> list[Face]:
         """
-        Runs the full SCRFD + ArcFace pipeline ONCE on a face crop and
-        returns the highest-confidence Face — bbox, 5-point landmarks,
-        pose, det_score, AND the 512-d embedding are all attached to the
-        object InsightFace hands back from a single app.get() call.
+        Runs the full SCRFD + ArcFace pipeline ONCE on a crop and returns
+        EVERY face found — bbox (crop pixels), 5-point landmarks, pose,
+        det_score AND the 512-d embedding come from that single app.get()
+        call, so quality evaluation and embedding extraction never re-run
+        the model.
 
-        Quality evaluation and embedding extraction both read off this one
-        Face object instead of re-invoking the model — avoids running
-        detection + recognition twice per crop.
+        The crop can contain more than one person's face; the caller decides
+        which face belongs to the track (face_selection.py). Never pick by
+        det_score here: that is how a neighbour's face ended up recorded as
+        this track's identity.
 
-        This call is blocking (CPU or GPU bound). Callers should invoke it
-        via asyncio.to_thread (or an executor) so it doesn't stall the
-        event loop — see consumer.py.
+        Blocking (CPU or GPU bound): call via asyncio.to_thread.
         """
         app = self.get_model()
-        faces = app.get(face_crop)
-        if not faces:
-            return None
-        return max(faces, key=lambda f: f.det_score)
+        return list(app.get(face_crop) or [])

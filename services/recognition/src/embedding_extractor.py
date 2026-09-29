@@ -1,6 +1,6 @@
 """
 Extracts the unit-normalized 512-d ArcFace embedding from a Face object
-that RecognitionModelLoader.detect_best_face() already produced.
+that RecognitionModelLoader.detect_faces() produced (the face selected for the track).
 
 No model call happens here. app.get() runs SCRFD detection and ArcFace
 recognition together in a single pass, so the embedding is already

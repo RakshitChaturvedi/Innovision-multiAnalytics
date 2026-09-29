@@ -34,13 +34,14 @@ from shared.frames import FrameUnavailable, fetch_frame
 from shared.schemas.consumer import BaseStreamConsumer
 from shared.schemas.enums import IdentityTag
 from shared.schemas.events import DetectionEvent, RecognitionEvent
-from shared.storage.storage_minio_client import StorageClient
+from shared.storage.storage_minio_client import StorageClient, open_frame_storage
 
 from .camera_config_store import CameraConfigStore
 from .config import config
 from .embedding_cache import EmbeddingCache
 from .embedding_extractor import extract_from_face
 from .face_crop import FaceCropper
+from .face_selection import HeadRegionConfig, select_face
 from .model_loader import RecognitionModelLoader
 from .quality_gate import QualityGate
 from .sampling import RecognitionSampler
@@ -74,21 +75,27 @@ class RecognitionConsumer(BaseStreamConsumer):
             consumer_name=config.CONSUMER_NAME,
         )
         self._model_loader = RecognitionModelLoader()
-        self._cache = EmbeddingCache()
+        self._cache = EmbeddingCache(stopping=self._shutdown)
         self._cropper = FaceCropper()
+        self._head_cfg = HeadRegionConfig(
+            width_frac=config.HEAD_WIDTH_FRAC,
+            top_margin_frac=config.HEAD_TOP_MARGIN_FRAC,
+            height_frac=config.HEAD_HEIGHT_FRAC,
+            ambiguity_ratio=config.FACE_AMBIGUITY_RATIO,
+        )
         self._quality_gate = QualityGate()
         self._sampler = RecognitionSampler(
             sample_rate=config.DEFAULT_SAMPLE_RATE,
             quality_improvement_threshold=config.QUALITY_IMPROVEMENT_THRESHOLD,
             stale_ttl_seconds=config.STALE_TRACK_TTL_SECONDS,
         )
-        self._cam_config = CameraConfigStore()
+        self._cam_config = CameraConfigStore(stopping=self._shutdown)
         self._engine = create_async_engine(config.DATABASE_URL)
         self._session_factory = async_sessionmaker(self._engine, expire_on_commit=False)
         self._pubsub_redis: aioredis.Redis | None = None
         self._minio: StorageClient | None = None
         self._sweeper_task: asyncio.Task | None = None
-        self._counters.update({"frame_unavailable": 0, "bad_payload": 0, "frame_decode_failed": 0})
+        self._counters.update({"frame_expired": 0, "bad_payload": 0, "frame_decode_failed": 0})
 
     def _count(self, name: str) -> None:
         self._counters[name] = self._counters.get(name, 0) + 1
@@ -97,9 +104,9 @@ class RecognitionConsumer(BaseStreamConsumer):
         # Blocking model load — run once, before accepting any messages.
         self._model_loader.preload()
 
-        # Cold-copy frame source. Credentials are read lazily by StorageClient;
-        # without MINIO_* set, fetch_frame simply has no cold fallback.
-        self._minio = StorageClient()
+        # Cold-copy frame source, configured once (MINIO_*, same defaults as
+        # detection). None = not configured: redis misses are FrameUnavailable.
+        self._minio = await open_frame_storage()
 
         # Dedicated connection for the pub/sub listeners; the consumer's own
         # self.redis (created in super().start()) serves frames and XADD.
@@ -108,7 +115,7 @@ class RecognitionConsumer(BaseStreamConsumer):
         await self._cam_config.initialize(self._pubsub_redis)
 
         self._sweeper_task = asyncio.create_task(
-            supervise("stale_track_sweeper", self._stale_track_sweeper),
+            supervise("stale_track_sweeper", self._stale_track_sweeper, stopping=self._shutdown),
             name="recognition-stale-sweeper",
         )
 
@@ -120,6 +127,9 @@ class RecognitionConsumer(BaseStreamConsumer):
 
     async def stop(self) -> None:
         """Safe to call at any point of start(), and more than once."""
+        # First: listeners/sweepers that die while we drain are stopping, not
+        # crashing (no ERROR, no restart).
+        self._shutdown.set()
         task, self._sweeper_task = self._sweeper_task, None
         if task is not None:
             task.cancel()
@@ -168,26 +178,65 @@ class RecognitionConsumer(BaseStreamConsumer):
         if not face_tracks:
             return
 
+        # Sampling decides BEFORE any I/O: most frames have no track due, and
+        # those must not cost a frame fetch + JPEG decode.
+        camera_id = str(detection_event.camera_id)
+        due = [
+            t for t in face_tracks
+            if self._sampler.should_sample(
+                camera_id=camera_id,
+                track_id=t.track_id,
+                frame_seq=detection_event.frame_seq,
+                quality_score=t.confidence,
+            )
+        ]
+        if not due:
+            self._count("frames_not_due")
+            return
+
+        # Tracks finished for THIS message (per call: cameras run concurrently).
+        done: set[int] = set()
+        try:
+            await self._recognize(detection_event, due, done)
+        except FrameUnavailable as exc:
+            # Gone from Redis and MinIO (expired, or MinIO not configured /
+            # unreachable). Retrying cannot help and it is routine when
+            # recognition lags behind the Redis TTL: count, log, ack (return)
+            # like detection does, instead of dead-lettering every frame.
+            # Nothing was recognized, so the due tracks are sampled again on
+            # the next frame.
+            self._count("frame_expired")
+            logger.warning(
+                "frame_expired camera=%s seq=%s ref=%s: %s",
+                detection_event.camera_id, detection_event.frame_seq,
+                detection_event.frame_reference, exc,
+            )
+            for track in due:
+                self._sampler.evict(camera_id, track.track_id)
+            return
+        except PermanentError:
+            raise
+        except Exception:
+            # Transient: the message is redelivered. Forget the sampler state
+            # of the tracks not finished, so the retry samples them again
+            # instead of skipping them as "not due". Persistence is idempotent.
+            for track in due:
+                if track.track_id not in done:
+                    self._sampler.evict(camera_id, track.track_id)
+            raise
+
+    async def _recognize(self, detection_event: DetectionEvent, due: list, done: set[int]) -> None:
         cam_cfg = await self._cam_config.get(str(detection_event.camera_id))
 
-        try:
-            frame_bytes = await fetch_frame(
-                self.redis,
-                self._minio,
-                camera_id=detection_event.camera_id,
-                frame_seq=detection_event.frame_seq,
-                frame_reference=detection_event.frame_reference,
-                frame_provider=detection_event.frame_provider,
-            )
-        except FrameUnavailable:
-            # Permanent: the base consumer dead-letters and acks. No retry loop.
-            self._count("frame_unavailable")
-            logger.warning(
-                "frame_unavailable camera=%s seq=%s ref=%s",
-                detection_event.camera_id, detection_event.frame_seq,
-                detection_event.frame_reference,
-            )
-            raise
+        # FrameUnavailable propagates to process() (acked there).
+        frame_bytes = await fetch_frame(
+            self.redis,
+            self._minio,
+            camera_id=detection_event.camera_id,
+            frame_seq=detection_event.frame_seq,
+            frame_reference=detection_event.frame_reference,
+            frame_provider=detection_event.frame_provider,
+        )
 
         frame = await asyncio.to_thread(_decode_jpeg, frame_bytes)
         if frame is None:
@@ -196,38 +245,30 @@ class RecognitionConsumer(BaseStreamConsumer):
             raise PermanentError(f"frame not decodable: {detection_event.frame_reference}")
 
         failures: list[Exception] = []
-        for track in face_tracks:
+        for track in due:
             try:
                 await self._process_track(
                     detection_event=detection_event, track=track, frame=frame, cam_cfg=cam_cfg,
                 )
+                done.add(track.track_id)
             except PermanentError:
                 raise
             except Exception as exc:
                 # One bad track must not block the other tracks of this frame,
-                # but the failure must not be swallowed either: forget the
-                # track's sampler state (so the retry is not skipped by
-                # sampling) and re-raise after the loop so the message stays
-                # pending and is redelivered. Persistence is idempotent.
+                # but the failure must not be swallowed either: re-raise after
+                # the loop so the message stays pending and is redelivered
+                # (process() evicts the sampler state of the failed tracks).
                 logger.exception(
                     "track_processing_failed camera=%s track=%d",
                     detection_event.camera_id, track.track_id,
                 )
-                self._sampler.evict(str(detection_event.camera_id), track.track_id)
                 failures.append(exc)
         if failures:
             raise failures[0]
 
     async def _process_track(self, detection_event: DetectionEvent, track, frame, cam_cfg: dict) -> None:
+        """Recognize one track that sampling already selected."""
         camera_id = str(detection_event.camera_id)
-
-        if not self._sampler.should_sample(
-            camera_id=camera_id,
-            track_id=track.track_id,
-            frame_seq=detection_event.frame_seq,
-            quality_score=track.confidence,
-        ):
-            return
 
         crop_result = self._cropper.crop(frame, track.face_bbox)
         if crop_result is None:
@@ -250,10 +291,28 @@ class RecognitionConsumer(BaseStreamConsumer):
         # Single model call for this crop — detection, alignment, and the
         # 512-d embedding all come from this one Face object. Blocking
         # (CPU/GPU-bound), so it runs off the event loop.
-        face = await asyncio.to_thread(self._model_loader.detect_best_face, crop_result.image)
-        if face is None:
-            logger.debug("no_face_detected_by_model track=%d", track.track_id)
+        faces = await asyncio.to_thread(self._model_loader.detect_faces, crop_result.image)
+        frame_h, frame_w = frame.shape[:2]
+        # Crop-local face boxes -> frame-pixel centers, then assign faces to
+        # tracks: the crop may hold a neighbour's face (identity swap).
+        centers = [
+            (
+                crop_result.x1 + (float(f.bbox[0]) + float(f.bbox[2])) / 2,
+                crop_result.y1 + (float(f.bbox[1]) + float(f.bbox[3])) / 2,
+            )
+            for f in faces
+        ]
+        selection = select_face(
+            centers, track, detection_event.tracks, frame_w, frame_h, self._head_cfg,
+        )
+        if selection.index is None:
+            self._count(f"face_{selection.reason}")
+            logger.debug(
+                "face_not_selected camera=%s track=%d faces=%d reason=%s",
+                camera_id, track.track_id, len(faces), selection.reason,
+            )
             return
+        face = faces[selection.index]
 
         quality_result = self._quality_gate.evaluate_face(
             face=face,
@@ -281,7 +340,6 @@ class RecognitionConsumer(BaseStreamConsumer):
         # coordinates, which are then normalized to 0-1 for storage —
         # same convention as every other bbox in this pipeline
         # (track.face_bbox, detection_events.face_bbox, etc).
-        frame_h, frame_w = frame.shape[:2]
         fx1, fy1, fx2, fy2 = face.bbox
         refined_face_bbox = {
             "x1": max(0.0, min((crop_result.x1 + float(fx1)) / frame_w, 1.0)),

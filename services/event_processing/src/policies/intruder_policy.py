@@ -1,3 +1,5 @@
+from collections import Counter
+from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
 
 from shared.schemas.enums import (
@@ -119,20 +121,39 @@ def classify_intruder(
     )
 
 
+def _unidentified(zone_type, authorized_person_ids):
+    return classify_intruder(
+        identity_tag=None,
+        person_id=None,
+        zone_type=zone_type,
+        authorized_person_ids=authorized_person_ids,
+        is_blocklisted=False,
+        similarity_score=0.0,
+    )
+
+
 def decide(
     rows: list[dict],
     zone_type: str,
     authorized_person_ids: list[str],
     blocklisted_person_ids: set[str],
+    conflicted_person_ids: AbstractSet[str] = frozenset(),
 ) -> tuple[IntruderClassification | None, dict | None]:
     """
     Classify one track from ALL its recognition rows in the time window.
 
     Returns (classification, chosen_row). classification is None when no
-    alert is needed. Order: blocklisted (any row) wins; then non-restricted
-    zones never alert; then no rows at all -> fail closed; then an
-    authorized ENROLLED row anywhere in the window -> authorized; otherwise
-    the highest-similarity row decides.
+    alert is needed. Order:
+      1. a blocklisted person in any row -> blocklisted (every zone)
+      2. non-restricted zone -> no alert
+      3. no rows at all -> fail closed (unidentified_in_restricted)
+      4. an ENROLLED person of this track that is also matched on ANOTHER
+         track of the same camera in the window (`conflicted_person_ids`)
+         -> the identity is unverified: fail closed
+      5. authorized only if ONE authorized enrolled person holds a strict
+         majority of the track's rows; authorized rows without a majority
+         -> fail closed (a single stray match never authorizes)
+      6. otherwise the highest-similarity row decides
     """
 
     for row in rows:
@@ -149,25 +170,29 @@ def decide(
                 row,
             )
 
-    if not rows:
-        return (
-            classify_intruder(
-                identity_tag=None,
-                person_id=None,
-                zone_type=zone_type,
-                authorized_person_ids=authorized_person_ids,
-                is_blocklisted=False,
-                similarity_score=0.0,
-            ),
-            None,
-        )
+    if zone_type != ZoneType.RESTRICTED.value:
+        return None, None
 
-    for row in rows:
-        if (
-            row["identity_tag"] == IdentityTag.ENROLLED.value
-            and row.get("person_id") in authorized_person_ids
-        ):
-            return None, row
+    if not rows:
+        return _unidentified(zone_type, authorized_person_ids), None
+
+    enrolled = [
+        r for r in rows
+        if r["identity_tag"] == IdentityTag.ENROLLED.value and r.get("person_id")
+    ]
+    if any(r["person_id"] in conflicted_person_ids for r in enrolled):
+        return _unidentified(zone_type, authorized_person_ids), None
+
+    authorized_rows = [r for r in enrolled if r["person_id"] in authorized_person_ids]
+    if authorized_rows:
+        person_id, votes = Counter(r["person_id"] for r in authorized_rows).most_common(1)[0]
+        if 2 * votes > len(rows):
+            chosen = max(
+                (r for r in authorized_rows if r["person_id"] == person_id),
+                key=lambda r: float(r["similarity_score"]),
+            )
+            return None, chosen
+        return _unidentified(zone_type, authorized_person_ids), None
 
     best = max(rows, key=lambda r: float(r["similarity_score"]))
 

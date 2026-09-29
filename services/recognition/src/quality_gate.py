@@ -9,7 +9,7 @@ worth it:
 
   2. evaluate_face()      — pose angle + detector confidence, operating on
      a Face object the CALLER already produced via
-     RecognitionModelLoader.detect_best_face(). This function does not
+     RecognitionModelLoader.detect_faces() (the face selected for the track). This function does not
      call the model itself — that call happens exactly once per crop,
      in the consumer, and its result is reused here and for embedding
      extraction.

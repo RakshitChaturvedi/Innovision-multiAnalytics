@@ -51,7 +51,8 @@ class ZoneMonitorConsumer(BaseStreamConsumer):
         )
 
         self._zone_store = ZoneStore(
-            session_factory=self._session_factory
+            session_factory=self._session_factory,
+            stopping=self._shutdown,
         )
 
         await self._zone_store.initialize(
@@ -68,6 +69,7 @@ class ZoneMonitorConsumer(BaseStreamConsumer):
             supervise(
                 "zone_stale_camera_sweeper",
                 self._processor.run_sweeper,
+                stopping=self._shutdown,
             )
         )
 
@@ -78,6 +80,7 @@ class ZoneMonitorConsumer(BaseStreamConsumer):
         await super().start()
 
     async def stop(self):
+        self._shutdown.set()  # background tasks dying from here on are stopping
         for task in (self._sweeper_task,):
             if task:
                 task.cancel()

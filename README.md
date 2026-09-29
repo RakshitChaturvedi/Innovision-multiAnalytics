@@ -139,7 +139,7 @@ def assess_headcount(zone_id, zone_name, count, max_headcount) -> HeadcountAsses
 
 ### 3.3 Headcount Config — [`headcount/config.py`](services/event_processing/src/workers/headcount/config.py)
 
-Follows the exact same pattern as [`zone_monitor/config.py`](services/event_processing/src/workers/zone_monitor/config.py) — class-level attributes with `os.environ.get()` fallbacks.
+Follows the exact same pattern as [`zone_monitor/config.py`](services/event_processing/src/workers/zone_monitor/config.py): pydantic-settings (environment variables first, then `.env`, then the defaults). Env names are prefixed with `HEADCOUNT_` (e.g. `HEADCOUNT_ROLLING_WINDOW_SECONDS`). Timing and demo values: [`docs/DEMO_TUNING.md`](docs/DEMO_TUNING.md).
 
 **Key tuning parameters:**
 

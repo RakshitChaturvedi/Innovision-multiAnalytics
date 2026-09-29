@@ -70,14 +70,65 @@ async def test_authorized_enrolled_never_alerts(db, make_processor, redis_client
     assert await db.intruder_events() == []
 
 
-async def test_authorized_row_wins_over_better_unknown_row(db, make_processor, redis_client):
+async def test_authorized_majority_wins_over_better_unknown_row(db, make_processor, redis_client):
     await db.zone()
     person = await db.person(authorized=True)
-    await db.recognition("enrolled", person=person, at=-3, sim=0.6)
+    for at in (-4, -3, -2):
+        await db.recognition("enrolled", person=person, at=at, sim=0.8)
     await db.recognition("unknown", at=-1, sim=0.99)  # face turned away, better score
     proc, _ = make_processor()
 
     await proc.handle(zone_event())
+
+    assert await alerts(redis_client) == []
+
+
+async def test_single_authorized_row_without_majority_fails_closed(db, make_processor, redis_client):
+    """Old rule: any one authorized row authorized the track."""
+    await db.zone()
+    person = await db.person(authorized=True)
+    await db.recognition("enrolled", person=person, at=-3, sim=0.8)
+    await db.recognition("unknown", at=-2, sim=0.5)
+    await db.recognition("unknown", at=-1, sim=0.5)
+    proc, _ = make_processor()
+
+    await proc.handle(zone_event())
+
+    (alert,) = await alerts(redis_client)
+    assert alert["metadata"]["classification_reason"] == "unidentified_in_restricted"
+
+
+async def test_same_person_on_two_tracks_fails_closed_for_both(db, make_processor, redis_client):
+    await db.zone()
+    person = await db.person(authorized=True)
+    for at in (-3, -2, -1):
+        await db.recognition("enrolled", person=person, at=at, track=7)
+    await db.recognition("enrolled", person=person, at=-2, track=8)
+    proc, _ = make_processor()
+
+    await proc.handle(zone_event(track=7))
+    await proc.handle(zone_event(track=8, seq=11))
+
+    got = await alerts(redis_client)
+    assert sorted(a["metadata"]["track_id"] for a in got) == [7, 8]
+    assert {a["metadata"]["classification_reason"] for a in got} == {"unidentified_in_restricted"}
+    assert proc.metrics["identity_conflict"] == 2
+
+
+async def test_same_person_on_other_track_outside_window_is_no_conflict(db, make_processor, redis_client):
+    await db.zone()
+    person = await db.person(authorized=True)
+    await db.recognition("enrolled", person=person, at=-1, track=7)
+    await db.recognition("enrolled", person=person, at=-120, track=8)  # long gone
+    await db.recognition("enrolled", person=person, at=-1, track=9, sim=0.9)
+    proc, _ = make_processor()
+    # other camera, same person, same time: not a conflict either
+    await db.run(
+        "UPDATE recognition_events SET camera_id = CAST(:c AS uuid) WHERE track_id = 9",
+        c="33333333-3333-3333-3333-333333333333",
+    )
+
+    await proc.handle(zone_event(track=7))
 
     assert await alerts(redis_client) == []
 
