@@ -34,7 +34,7 @@ from shared.frames import FrameUnavailable, fetch_frame
 from shared.schemas.consumer import BaseStreamConsumer
 from shared.schemas.enums import IdentityTag
 from shared.schemas.events import DetectionEvent, RecognitionEvent
-from shared.storage.storage_minio_client import StorageClient
+from shared.storage.storage_minio_client import StorageClient, open_frame_storage
 
 from .camera_config_store import CameraConfigStore
 from .config import config
@@ -95,7 +95,7 @@ class RecognitionConsumer(BaseStreamConsumer):
         self._pubsub_redis: aioredis.Redis | None = None
         self._minio: StorageClient | None = None
         self._sweeper_task: asyncio.Task | None = None
-        self._counters.update({"frame_unavailable": 0, "bad_payload": 0, "frame_decode_failed": 0})
+        self._counters.update({"frame_expired": 0, "bad_payload": 0, "frame_decode_failed": 0})
 
     def _count(self, name: str) -> None:
         self._counters[name] = self._counters.get(name, 0) + 1
@@ -104,9 +104,9 @@ class RecognitionConsumer(BaseStreamConsumer):
         # Blocking model load — run once, before accepting any messages.
         self._model_loader.preload()
 
-        # Cold-copy frame source. Credentials are read lazily by StorageClient;
-        # without MINIO_* set, fetch_frame simply has no cold fallback.
-        self._minio = StorageClient()
+        # Cold-copy frame source, configured once (MINIO_*, same defaults as
+        # detection). None = not configured: redis misses are FrameUnavailable.
+        self._minio = await open_frame_storage()
 
         # Dedicated connection for the pub/sub listeners; the consumer's own
         # self.redis (created in super().start()) serves frames and XADD.
@@ -186,15 +186,18 @@ class RecognitionConsumer(BaseStreamConsumer):
                 frame_reference=detection_event.frame_reference,
                 frame_provider=detection_event.frame_provider,
             )
-        except FrameUnavailable:
-            # Permanent: the base consumer dead-letters and acks. No retry loop.
-            self._count("frame_unavailable")
+        except FrameUnavailable as exc:
+            # Gone from Redis and MinIO (expired, or MinIO not configured /
+            # unreachable). Retrying cannot help and it is routine when
+            # recognition lags behind the Redis TTL: count, log, ack (return)
+            # like detection does, instead of dead-lettering every frame.
+            self._count("frame_expired")
             logger.warning(
-                "frame_unavailable camera=%s seq=%s ref=%s",
+                "frame_expired camera=%s seq=%s ref=%s: %s",
                 detection_event.camera_id, detection_event.frame_seq,
-                detection_event.frame_reference,
+                detection_event.frame_reference, exc,
             )
-            raise
+            return
 
         frame = await asyncio.to_thread(_decode_jpeg, frame_bytes)
         if frame is None:

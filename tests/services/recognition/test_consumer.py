@@ -13,7 +13,6 @@ import pytest
 from services.recognition.src import consumer as consumer_mod
 from services.recognition.src.consumer import RecognitionConsumer, _clamp01
 from shared.errors import PermanentError
-from shared.frames import FrameUnavailable
 from shared.schemas.events import RecognitionEvent
 
 from .conftest import (
@@ -112,24 +111,25 @@ async def test_frame_fetched_via_provider_and_reference_verbatim(rc):
     assert await pending(rc) == 0
 
 
-async def test_frame_unavailable_is_dead_lettered_counted_not_retried(rc, caplog):
+async def test_expired_frame_is_acked_counted_not_dead_lettered(rc, caplog):
+    """Before: every expired frame was dead-lettered (one DLQ entry per frame)."""
     ev = detection_event(frame_seq=5)  # nothing stored in redis, no minio
     msg_id, fields = await deliver(rc, ev)
     with caplog.at_level(logging.WARNING):
         await rc._handle(STREAM, msg_id, fields)
 
     assert await pending(rc) == 0  # acked: no infinite retry
-    dlq = await rc.redis.xrange(f"{STREAM}:dlq")
-    assert len(dlq) == 1 and b"FrameUnavailable" in dlq[0][1][b"error"]
-    assert rc.stats()["frame_unavailable"] == 1
-    assert rc.stats()["dlq"] == 1
-    assert any("frame_unavailable" in r.message for r in caplog.records)
+    assert await rc.redis.xlen(f"{STREAM}:dlq") == 0
+    assert rc.stats()["frame_expired"] == 1
+    assert rc.stats()["dlq"] == 0
+    assert any("frame_expired" in r.message and r.levelno == logging.WARNING
+               for r in caplog.records)
 
 
-async def test_process_raises_frame_unavailable(rc):
+async def test_process_returns_on_expired_frame(rc):
     msg_id, fields = await deliver(rc, detection_event())
-    with pytest.raises(FrameUnavailable):
-        await rc.process(msg_id, fields, STREAM)
+    await rc.process(msg_id, fields, STREAM)  # no FrameUnavailable escapes
+    assert rc.stats()["frame_expired"] == 1
 
 
 async def test_bad_payload_and_corrupt_frame_are_permanent(rc):

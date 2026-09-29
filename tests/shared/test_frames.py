@@ -1,10 +1,14 @@
 """fetch_frame / minio_frame_key / platform FrameEvent. Runs on FAKES."""
 import json
+import logging
+import socket
+import time
 from datetime import datetime, timezone
 from unittest.mock import MagicMock
 from uuid import uuid4
 
 import pytest
+import urllib3
 from minio.error import S3Error
 
 from shared.errors import PermanentError
@@ -12,6 +16,11 @@ from shared.frames import FrameUnavailable, fetch_frame, minio_frame_key
 from shared.platform_contracts.enums import FrameProvider
 from shared.platform_contracts.frame_event import FrameEvent as PlatformFrameEvent
 from shared.schemas.events import DetectionEvent, FrameEvent
+from shared.storage.storage_minio_client import (
+    MinioSettings,
+    StorageClient,
+    open_frame_storage,
+)
 
 
 class FakeRedis:
@@ -127,3 +136,97 @@ def test_platform_frame_event_json_parses_into_pipeline():
     assert detection.frame_provider == FrameProvider.REDIS
     assert detection.frame_reference == event.frame_reference
     assert detection.frame_event_id == event.event_id
+
+
+# ------------------------------------------------ MinIO missing / unreachable
+
+
+class UnreachableStorage(FakeStorage):
+    """Real outage bookkeeping (StorageClient.mark_*), fake transport."""
+
+    def __init__(self):
+        super().__init__(error=urllib3.exceptions.MaxRetryError(None, "/", "refused"))
+        self.real = StorageClient(MinioSettings(minio_endpoint="127.0.0.1:1"))
+        self.enabled = True
+
+    def mark_unreachable(self, exc):
+        self.real.mark_unreachable(exc)
+
+    def mark_reachable(self):
+        self.real.mark_reachable()
+
+
+async def test_redis_miss_without_minio_is_frame_unavailable():
+    with pytest.raises(FrameUnavailable):
+        await call(FakeRedis(), None)
+
+
+async def test_redis_miss_with_disabled_minio_is_frame_unavailable():
+    disabled = StorageClient(MinioSettings(minio_endpoint=""))
+    with pytest.raises(FrameUnavailable):
+        await call(FakeRedis(), disabled)
+
+
+async def test_unreachable_minio_is_frame_unavailable_and_logged_once(caplog):
+    storage = UnreachableStorage()
+    with caplog.at_level(logging.WARNING):
+        for seq in range(5):
+            with pytest.raises(FrameUnavailable):
+                await call(FakeRedis(), storage, seq=seq)
+    outage_logs = [r for r in caplog.records if "minio_unreachable" in r.message]
+    assert len(outage_logs) == 1 and outage_logs[0].levelno == logging.WARNING
+    assert len(storage.calls) == 5  # still tried each time: recovers by itself
+
+
+async def test_outage_is_logged_again_after_recovery(caplog):
+    storage = UnreachableStorage()
+    with caplog.at_level(logging.INFO):
+        with pytest.raises(FrameUnavailable):
+            await call(FakeRedis(), storage)
+        storage.error = None
+        storage.objects = {minio_frame_key(CAM, 42): b"cold"}
+        assert await call(FakeRedis(), storage) == b"cold"
+        storage.error = urllib3.exceptions.MaxRetryError(None, "/", "refused")
+        with pytest.raises(FrameUnavailable):
+            await call(FakeRedis(), storage)
+    messages = [r.message for r in caplog.records]
+    assert sum("minio_unreachable" in m for m in messages) == 2
+    assert sum("minio_reachable_again" in m for m in messages) == 1
+
+
+async def test_real_client_on_closed_port_is_frame_unavailable_fast(caplog):
+    """A real StorageClient against a port nothing listens on (refused)."""
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]  # closed again when the block ends
+    storage = StorageClient(MinioSettings(minio_endpoint=f"127.0.0.1:{port}", minio_timeout_s=1))
+    started = time.monotonic()
+    with caplog.at_level(logging.WARNING):
+        for seq in range(3):
+            with pytest.raises(FrameUnavailable):
+                await call(FakeRedis(), storage, seq=seq)
+    assert time.monotonic() - started < 10
+    assert sum("minio_unreachable" in r.message for r in caplog.records) == 1
+
+
+async def test_open_frame_storage_not_configured_logs_once_returns_none(caplog):
+    with caplog.at_level(logging.WARNING):
+        assert await open_frame_storage(MinioSettings(minio_endpoint="")) is None
+    assert sum("minio_not_configured" in r.message for r in caplog.records) == 1
+
+
+async def test_open_frame_storage_unreachable_returns_client_and_logs(caplog):
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    with caplog.at_level(logging.WARNING):
+        storage = await open_frame_storage(
+            MinioSettings(minio_endpoint=f"127.0.0.1:{port}", minio_timeout_s=1)
+        )
+    assert storage is not None and storage.enabled
+    assert sum("minio_unreachable" in r.message for r in caplog.records) == 1
+    # a later frame during the same outage does not log again
+    with caplog.at_level(logging.WARNING):
+        with pytest.raises(FrameUnavailable):
+            await call(FakeRedis(), storage)
+    assert sum("minio_unreachable" in r.message for r in caplog.records) == 1

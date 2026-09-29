@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from minio.error import S3Error
 
-from shared.storage.storage_minio_client import StorageClient
+from shared.storage.storage_minio_client import MinioSettings, StorageClient, StorageDisabled
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -39,43 +39,64 @@ def storage(mock_env, mock_minio):
 
 class TestInitialization:
 
+    @pytest.fixture(autouse=True)
+    def _no_dotenv(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)  # no stray .env from the repo root
+
     def test_creates_client_with_env_vars(self, mock_env, mock_minio):
         mock_minio_cls, mock_client = mock_minio
 
         StorageClient().client
 
-        mock_minio_cls.assert_called_once_with(
-            endpoint="localhost:9000",
-            access_key="admin",
-            secret_key="password123",
-            secure=False,
+        kwargs = mock_minio_cls.call_args.kwargs
+        assert (kwargs["endpoint"], kwargs["access_key"], kwargs["secret_key"], kwargs["secure"]) == (
+            "localhost:9000", "admin", "password123", False,
         )
+        assert kwargs["http_client"] is not None  # short timeouts, bounded retries
 
     def test_secure_true_when_env_set(self, mock_minio, monkeypatch):
         mock_minio_cls, mock_client = mock_minio
         monkeypatch.setenv("MINIO_ENDPOINT", "localhost:9000")
-        monkeypatch.setenv("MINIO_ACCESS_KEY", "admin")
-        monkeypatch.setenv("MINIO_SECRET_KEY", "password123")
         monkeypatch.setenv("MINIO_SECURE", "true")
 
         StorageClient().client
 
-        mock_minio_cls.assert_called_once_with(
-            endpoint="localhost:9000",
-            access_key="admin",
-            secret_key="password123",
-            secure=True,
+        assert mock_minio_cls.call_args.kwargs["secure"] is True
+
+    def test_missing_env_uses_service_defaults_not_keyerror(self, mock_minio, monkeypatch):
+        """Before: os.environ["MINIO_*"] on first use -> KeyError on every frame."""
+        mock_minio_cls, _ = mock_minio
+        for var in ("MINIO_ENDPOINT", "MINIO_ACCESS_KEY", "MINIO_SECRET_KEY", "MINIO_SECURE"):
+            monkeypatch.delenv(var, raising=False)
+
+        storage = StorageClient()
+        storage.client  # must not raise
+
+        kwargs = mock_minio_cls.call_args.kwargs
+        assert (kwargs["endpoint"], kwargs["access_key"], kwargs["secret_key"]) == (
+            "minio:9000", "minioadmin", "minioadmin",
         )
+        assert storage.enabled
 
-    def test_missing_env_does_not_raise_at_construction(self, mock_minio, monkeypatch):
-        monkeypatch.delenv("MINIO_ENDPOINT", raising=False)
-        monkeypatch.setenv("MINIO_ACCESS_KEY", "admin")
-        monkeypatch.setenv("MINIO_SECRET_KEY", "password123")
+    def test_env_is_read_once_at_construction(self, mock_env, mock_minio, monkeypatch):
+        mock_minio_cls, _ = mock_minio
+        storage = StorageClient()
+        monkeypatch.setenv("MINIO_ENDPOINT", "elsewhere:9000")
+        storage.client
+        assert mock_minio_cls.call_args.kwargs["endpoint"] == "localhost:9000"
 
-        storage = StorageClient()  # must not raise
-
-        with pytest.raises(KeyError):
+    def test_empty_endpoint_disables_storage(self, mock_minio, monkeypatch):
+        monkeypatch.setenv("MINIO_ENDPOINT", "")
+        storage = StorageClient()
+        assert storage.enabled is False
+        with pytest.raises(StorageDisabled):
             storage.client
+
+    def test_settings_can_be_passed_explicitly(self, mock_minio):
+        mock_minio_cls, _ = mock_minio
+        StorageClient(MinioSettings(minio_endpoint="h:1", minio_access_key="a",
+                                    minio_secret_key="b")).client
+        assert mock_minio_cls.call_args.kwargs["endpoint"] == "h:1"
 
     def test_buckets_dict_set_correctly(self, storage):
         assert storage.buckets == {

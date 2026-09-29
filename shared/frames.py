@@ -7,6 +7,7 @@ and is used verbatim. The cold copy lives in MinIO under `minio_frame_key`.
 import asyncio
 import logging
 
+import urllib3
 from minio.error import S3Error
 
 from shared.errors import PermanentError
@@ -28,16 +29,32 @@ def minio_frame_key(camera_id, frame_seq: int) -> str:
 
 
 async def _fetch_from_minio(minio_client, camera_id, frame_seq: int) -> bytes | None:
-    if minio_client is None:
+    if minio_client is None or not getattr(minio_client, "enabled", True):
         return None
     key = minio_frame_key(camera_id, frame_seq)
     try:
         data = await asyncio.to_thread(minio_client.download, FRAMES_BUCKET_KEY, key)
     except S3Error as exc:
         if exc.code in _MISSING_CODES:
+            _reachable(minio_client)
             return None
         raise  # anything else is transient: let the message be retried
+    except (urllib3.exceptions.HTTPError, OSError) as exc:
+        # MinIO unreachable (connection refused, DNS, timeout): the cold copy
+        # cannot be read, so the frame is unavailable. Logged once per outage
+        # by the client, not once per frame.
+        mark = getattr(minio_client, "mark_unreachable", None)
+        if mark is not None:
+            mark(exc)
+        return None
+    _reachable(minio_client)
     return data or None
+
+
+def _reachable(minio_client) -> None:
+    mark = getattr(minio_client, "mark_reachable", None)
+    if mark is not None:
+        mark()
 
 
 async def fetch_frame(
@@ -51,8 +68,9 @@ async def fetch_frame(
 ) -> bytes:
     """Return the JPEG bytes of a frame.
 
-    Redis/MinIO connection errors propagate (transient). Only "frame is gone"
-    is permanent and raises FrameUnavailable.
+    Redis connection errors propagate (transient). "Frame is gone" is
+    permanent and raises FrameUnavailable; so is a Redis miss while MinIO is
+    not configured (None / disabled client) or unreachable.
     """
     if frame_provider == FrameProvider.REDIS:
         data = await redis.get(frame_reference)
