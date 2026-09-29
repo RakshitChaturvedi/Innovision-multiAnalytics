@@ -3,7 +3,7 @@ name = "innovision-multianalytics"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.12"
 dependencies = [
     "minio>=7.2.20",
     "alembic>=1.18.4",
