@@ -95,6 +95,10 @@ Dev Redis runs with `--maxmemory-policy volatile-lru --appendonly yes` (same as 
 - Postgres tests use `TEST_DATABASE_URL` (recreated per run; tests that drop the schema use its
   `_scratch` sibling). Real-service fixtures live in `tests/conftest.py`; they skip locally when a
   service is unreachable and FAIL in CI (`REQUIRE_REAL_SERVICES=1`).
+- Test data must never contain realistic-looking credentials (no `user:secret@host` URLs,
+  `password=...`, `TOKEN=...` literals), even fake ones: secret scanners flag them. Build them at
+  runtime with `tests/tools/fakes.py` (every value contains `REDACTED`, so masking tests assert that
+  `REDACTED` never appears in masked output).
 
 ## 5. Streams and groups
 
