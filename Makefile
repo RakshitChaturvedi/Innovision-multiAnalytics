@@ -19,7 +19,7 @@ test:
 	pytest -q
 
 health:
-	@echo "health: not implemented yet (planned: python tools/check_health.py)"
+	python tools/check_health.py
 
 demo:
-	@echo "demo: not implemented yet (planned: tools/mock_platform feeder + services + alert sink + viewer)"
+	tools/mock_platform/demo.sh
