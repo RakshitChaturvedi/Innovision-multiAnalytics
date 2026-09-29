@@ -234,6 +234,14 @@ class BatchManager:
     # DEPTH (for metrics / backpressure reporting)
     # =========================================================
 
+    def task_done(self) -> None:
+        """Called by the processor after a batch was handled."""
+        self._ready_queue.task_done()
+
+    async def join(self) -> None:
+        """Wait until every flushed batch has been handled."""
+        await self._ready_queue.join()
+
     def pending_batches(self) -> int:
         return self._ready_queue.qsize()
 

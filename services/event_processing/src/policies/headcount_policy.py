@@ -1,32 +1,55 @@
+"""Pure breach state machine for zone headcount (no I/O, event time only)."""
+import math
 from dataclasses import dataclass
+from datetime import datetime
+from enum import Enum
+
+
+class Phase(str, Enum):
+    NORMAL = "normal"
+    BREACH = "breach"
+
+
+class Transition(str, Enum):
+    OPEN = "open"
+    RESOLVE = "resolve"
 
 
 @dataclass(frozen=True)
-class HeadcountAssessment:
-    zone_id: str
-    zone_name: str
-    count: int
-    threshold: int
-    is_breach: bool
+class BreachState:
+    phase: Phase = Phase.NORMAL
+    # Event time at which the condition for leaving `phase` first held
+    # continuously. None while the condition does not hold.
+    since: datetime | None = None
 
 
-def assess_headcount(
-    zone_id: str,
-    zone_name: str,
-    count: int,
-    max_headcount: int | None,
-) -> HeadcountAssessment | None:
+def resolve_margin(max_headcount: int) -> int:
+    return max(1, math.ceil(0.1 * max_headcount))
+
+
+def step(
+    state: BreachState,
+    rolling_avg: float,
+    max_headcount: int,
+    ts: datetime,
+    enter_seconds: float,
+    exit_seconds: float,
+) -> tuple[BreachState, Transition | None]:
     """
-    Returns HeadcountAssessment if the zone has a headcount threshold configured.
-    Returns None if no threshold is configured (max_headcount is None).
+    NORMAL -> BREACH: rolling_avg > max continuously for enter_seconds.
+    BREACH -> NORMAL: rolling_avg <= max - margin continuously for exit_seconds.
     """
-    if max_headcount is None:
-        return None
+    if state.phase is Phase.NORMAL:
+        condition = rolling_avg > max_headcount
+        hold, target, transition = enter_seconds, Phase.BREACH, Transition.OPEN
+    else:
+        condition = rolling_avg <= max_headcount - resolve_margin(max_headcount)
+        hold, target, transition = exit_seconds, Phase.NORMAL, Transition.RESOLVE
 
-    return HeadcountAssessment(
-        zone_id=zone_id,
-        zone_name=zone_name,
-        count=count,
-        threshold=max_headcount,
-        is_breach=(count > max_headcount),
-    )
+    if not condition:
+        return BreachState(state.phase, None), None
+
+    since = state.since if state.since is not None else ts
+    if (ts - since).total_seconds() >= hold:
+        return BreachState(target, None), transition
+    return BreachState(state.phase, since), None

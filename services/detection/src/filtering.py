@@ -56,15 +56,10 @@ class DetectionFilter:
     def __init__(
         self,
         face_estimator: FaceEstimator,
-        min_confidence: float = 0.5,
     ) -> None:
 
         self._face_estimator = (
             face_estimator
-        )
-
-        self._min_confidence = (
-            min_confidence
         )
 
     # =========================================================
@@ -93,15 +88,8 @@ class DetectionFilter:
 
         for track in tracked:
 
-            # -------------------------------------------------
-            # Confidence filtering
-            # -------------------------------------------------
-
-            if (
-                track.confidence
-                < self._min_confidence
-            ):
-                continue
+            # No confidence filter here: ByteTrack only returns activated
+            # tracks, and dropping low-confidence rows made tracks flicker.
 
             # -------------------------------------------------
             # Pixel -> normalized coordinates

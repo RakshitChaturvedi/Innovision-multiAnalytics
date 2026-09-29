@@ -8,6 +8,7 @@ import numpy as np
 
 from services.detection.src.consumer import DetectionConsumer
 from services.detection.src.detector import RawDetection
+from services.detection.src.track_ids import TrackIdAllocator
 from shared.platform_contracts.enums import FrameProvider
 from shared.schemas.events import FrameEvent
 
@@ -52,6 +53,11 @@ class TestDetectionPipelineIntegration(unittest.IsolatedAsyncioTestCase):
         redis_mock = AsyncMock()
         consumer.redis = redis_mock
         consumer._side_redis = redis_mock
+        stream = f"frames:{camera_id}"
+
+        # Global track ids come from a Redis counter (INCRBY)
+        redis_mock.incrby.return_value = 1
+        consumer._track_ids = TrackIdAllocator(redis_mock, track_buffer=30)
 
         # Setup Redis frame cache mock
         redis_mock.get.return_value = frame_bytes
@@ -86,7 +92,7 @@ class TestDetectionPipelineIntegration(unittest.IsolatedAsyncioTestCase):
         # 5. Send message through consumer.process()
         msg_id = "1700000000000-0"
         msg_payload = {"data": frame_event.model_dump_json()}
-        await consumer._handle(consumer.streams[0], msg_id, msg_payload)
+        await consumer._handle(stream, msg_id, msg_payload)
 
         # Verify frame_reference was used verbatim as the Redis key (no prefix)
         redis_mock.get.assert_called_with(frame_ref)
@@ -121,7 +127,7 @@ class TestDetectionPipelineIntegration(unittest.IsolatedAsyncioTestCase):
 
         # Verify message was ACKed in Redis after full pipeline completion
         redis_mock.xack.assert_called_once_with(
-            consumer.streams[0], consumer.group_name, msg_id
+            stream, consumer.group_name, msg_id
         )
 
         # 8. Clean up

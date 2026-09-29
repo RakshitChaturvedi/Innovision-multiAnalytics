@@ -168,6 +168,9 @@ class CameraTracker:
         )
 
         self._algorithm = "bytetrack"
+        # Incremented on every reset: local track ids restart afterwards, so
+        # anything mapped from them must be discarded.
+        self.reset_count = 0
         self._tracker = self._create()
 
         logger.info(
@@ -251,6 +254,7 @@ class CameraTracker:
         """
 
         self._tracker = self._create()
+        self.reset_count += 1
 
         logger.info(
             "camera_tracker_reset camera_id=%s",
