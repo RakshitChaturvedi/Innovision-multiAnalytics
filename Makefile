@@ -1,4 +1,4 @@
-.PHONY: infra migrate test health demo
+.PHONY: infra migrate test health
 
 # Compose reads variables from --env-file; without it, compose looks for .env
 # next to the compose file (infra/), not in the repo root, and silently falls
@@ -20,6 +20,3 @@ test:
 
 health:
 	@echo "health: not implemented yet (planned: python tools/check_health.py)"
-
-demo:
-	@echo "demo: not implemented yet (planned: tools/mock_platform feeder + services + alert sink + viewer)"

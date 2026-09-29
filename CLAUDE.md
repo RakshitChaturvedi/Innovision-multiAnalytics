@@ -79,7 +79,6 @@ Internal events (`DetectionEvent`, `RecognitionEvent`, `ZoneEvent`) are owned by
 make infra        # docker compose --env-file .env -f infra/docker-compose.dev.yml up -d  (redis, postgres+pgvector, minio, bucket init; creates .env from .env.example if missing)
 make migrate      # alembic -c migrations/alembic.ini upgrade head   (DATABASE_URL -> innovision_analytics)
 make test         # pytest -q
-make demo         # feeder + all services + alert sink + viewer (see tools/)
 make health       # python tools/check_health.py  (stream lengths, pending, DLQ, lag)
 ```
 
@@ -101,11 +100,11 @@ Dev Redis runs with `--maxmemory-policy volatile-lru --appendonly yes` (same as 
 
 | Stream | Producer | Consumer groups |
 |---|---|---|
-| `frames:{camera_id}` | platform ingestion (or `tools/mock_platform/feeder.py`) | `detection_group` |
+| `frames:{camera_id}` | platform ingestion | `detection_group` |
 | `events:detections` | detection | `zone_monitor_group`, `headcount_group`, `recognition_group` |
 | `events:zone` | zone_monitor | `intruder_group` |
 | `events:recognitions` | recognition | (none yet) |
-| `alerts:live` | intruder, headcount | platform `alert_management_group` (or mock `mock_alert_sink`) |
+| `alerts:live` | intruder, headcount | platform `alert_management_group` |
 | `{stream}:dlq` | BaseStreamConsumer | humans / `tools/check_health.py` |
 
 ## 6. Known bugs this branch fixes (checklist)
@@ -122,13 +121,22 @@ Dev Redis runs with `--maxmemory-policy volatile-lru --appendonly yes` (same as 
 - [ ] Intruder: fail-open when no recognition; unbounded recognition lookup; DB insert + XADD not atomic; alert_type mapping.
 - [ ] Headcount: breach on instantaneous count (flapping); DB query per frame; duplicate breaches; breach never resolves when camera goes stale.
 
+### Runtime setup (real platform only)
+
+The use case runs as Python processes (detection, recognition, event_processing) on the host, against
+the REAL platform stack on localhost: platform Redis (`frames:*`, `frame:*`, `alerts:live`), Postgres
+(this repo's database `innovision_analytics` only), MinIO (`innovision-frames`) and the platform camera
+registry.
+The platform's `docker-compose.stubs.yml` must NEVER run alongside: its stub services would produce
+frames/consume alerts in place of the real platform. `infra/docker-compose.dev.yml` is for tests only.
+
 ## 7. Definition of done (acceptance)
 
-Run against `tools/mock_platform` with the demo video for 30 minutes:
+Run against the real platform with real cameras for 30 minutes; acceptance is `tools/check_integration.py`:
 1. `make test` green.
 2. Headcount: count per zone matches reality; exactly ONE alert per breach episode; no flapping at the limit; breach resolves after people leave or camera goes stale.
 3. Intruder: unknown person in restricted zone ALWAYS alerts (also with face turned away); authorized enrolled person NEVER alerts; one alert per intrusion.
 4. Zones: leaving the frame produces EXITED within ~2 s; DWELL fires once per track/zone.
-5. Every alert passes the platform `AlertEvent` + `AlertEventValidator` (mock sink reports 0 invalid).
+5. Every alert passes the platform `AlertEvent` + `AlertEventValidator` (`tools/check_integration.py` reports 0 invalid).
 6. Chaos: kill -9 each service mid-run and restart → no lost and no duplicate alerts. Restart Redis/Postgres for 30 s → processing resumes by itself.
 7. `make health` after the run: 0 pending older than 60 s in every group, DLQ entries only for deliberately injected bad messages.
