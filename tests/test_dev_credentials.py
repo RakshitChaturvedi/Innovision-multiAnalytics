@@ -1,6 +1,7 @@
 """.env.example, infra/docker-compose.dev.yml and the code defaults agree on
 the dev credentials (Postgres analytics/analytics, MinIO minioadmin/minioadmin)
 and `make infra` hands the repo-root .env to compose explicitly."""
+import os
 import re
 import shutil
 import subprocess
@@ -50,9 +51,13 @@ def test_compose_defaults_match_env_example():
 
 @pytest.mark.skipif(shutil.which("docker") is None, reason="docker not installed")
 def test_compose_resolves_the_same_credentials_with_env_example():
+    # Shell variables win over --env-file in compose; CI exports e.g.
+    # POSTGRES_USER=test, so drop every variable the compose file interpolates.
+    interpolated = set(re.findall(r"\$\{(\w+)", COMPOSE.read_text()))
+    env = {k: v for k, v in os.environ.items() if k not in interpolated}
     result = subprocess.run(
         ["docker", "compose", "--env-file", ".env.example", "-f", str(COMPOSE), "config"],
-        cwd=ROOT, capture_output=True, text=True,
+        cwd=ROOT, capture_output=True, text=True, env=env,
     )
     if result.returncode != 0 and "compose" in result.stderr and "unknown" in result.stderr:
         pytest.skip("docker compose plugin not installed")
