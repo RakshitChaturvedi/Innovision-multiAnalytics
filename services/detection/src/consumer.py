@@ -679,7 +679,7 @@ class DetectionConsumer(BaseStreamConsumer):
             if ack_key:
                 acked.append(ack_key)
 
-            logger.info(
+            logger.debug(
                 "frame_processed model=yolov11m camera_id=%s seq=%d "
                 "tracks=%d latency_ms=%.1f%s",
                 frame_event.camera_id,

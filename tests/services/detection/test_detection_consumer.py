@@ -336,3 +336,15 @@ async def test_publish_and_ack_are_json_serialisable_events():
     await feed(c, redis, CAM_A, 0)
     await run_ready_batches(c)
     json.loads(redis.stream[0][1]["data"])
+
+
+async def test_frame_processed_is_debug_not_info(caplog):
+    """One INFO line per frame flooded the logs; periodic stats stay at INFO."""
+    c, redis = make_consumer()
+    with caplog.at_level(logging.DEBUG, logger="services.detection.src.consumer"):
+        for seq in range(3):
+            await feed(c, redis, CAM_A, seq)
+        await run_ready_batches(c)
+    processed = [r for r in caplog.records if r.message.startswith("frame_processed")]
+    assert len(processed) == 3
+    assert all(r.levelno == logging.DEBUG for r in processed)
