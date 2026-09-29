@@ -145,6 +145,16 @@ jobs:
       - name: Install dependencies
         run: uv sync --frozen
 
+      # Detection tests run against the REAL ultralytics ByteTrack (without it
+      # tests/conftest.py substitutes an IoU fake). CPU-only torch keeps this
+      # small; ultralytics pinned as in services/detection/requirements.txt.
+      - name: Install ultralytics (CPU torch)
+        run: >-
+          uv pip install
+          --index-url https://download.pytorch.org/whl/cpu
+          --extra-index-url https://pypi.org/simple
+          torch torchvision ultralytics==8.3.155
+
       # Some tests start their own throwaway redis-server, so the binary is
       # needed; the packaged service is stopped to keep port 6379 free.
       - name: Install redis-server binary
