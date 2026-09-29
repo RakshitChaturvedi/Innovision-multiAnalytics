@@ -1,10 +1,7 @@
-import os
 from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
 import pytest
-import pytest_asyncio
-import redis.asyncio as aioredis
 
 from shared.schemas.common import BoundingBox, TrackResult
 from shared.schemas.events import DetectionEvent, FrameProvider, ZoneEvent
@@ -20,21 +17,6 @@ CAMERA = UUID("11111111-1111-1111-1111-111111111111")
 ZONE = UUID("22222222-2222-2222-2222-222222222222")
 T0 = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
 SQUARE = [[0.4, 0.4], [0.6, 0.4], [0.6, 0.6], [0.4, 0.6]]
-
-
-@pytest_asyncio.fixture
-async def redis_client():
-    """Real Redis (TEST_REDIS_URL, default db 15); skipped if unreachable."""
-    url = os.environ.get("TEST_REDIS_URL", "redis://127.0.0.1:6379/15")
-    client = aioredis.from_url(url)
-    try:
-        await client.ping()
-    except Exception:
-        pytest.skip(f"no Redis at {url}")
-    await client.flushdb()
-    yield client
-    await client.flushdb()
-    await client.aclose()
 
 
 class FakeZoneStore:
