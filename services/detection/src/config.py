@@ -33,7 +33,7 @@ class DetectionSettings(BaseSettings):
     redis_port: int = Field(default=6379)
 
     database_url: str = Field(
-        default="postgresql+asyncpg://postgres:postgres@postgres:5432/innovision",
+        default="postgresql+asyncpg://postgres:postgres@postgres:5432/innovision_analytics",
     )
 
     db_pool_size: int = Field(default=5)
@@ -52,11 +52,6 @@ class DetectionSettings(BaseSettings):
     detection_classes: list[int] = Field(default=[0])
     detection_imgsz: int = Field(default=640)
     use_gpu: bool = Field(default=False)
-
-    # Confidence floor applied AFTER tracking. Kept separate from the
-    # YOLO threshold: ByteTrack deliberately uses low-confidence boxes
-    # for association, and we do not want those published.
-    publish_confidence: float = Field(default=0.5)
 
     # ---------------- tracking ----------------
 
@@ -94,13 +89,19 @@ class DetectionSettings(BaseSettings):
     metrics_port: int = Field(default=9108)
     log_level: str = Field(default="INFO")
 
-    # ---------------- sprint-2 single camera ----------------
+    # ---------------- camera discovery ----------------
 
-    # NOTE: the original value had 7 digits in the first UUID group
-    # instead of 8, so it was not a valid UUID.
-    test_camera_id: str = Field(
-        default="00000000-0000-0000-0000-000000000001"
-    )
+    # Comma separated camera ids. When set it wins and the registry is
+    # not polled (used by the mock demo).
+    detection_camera_ids: str = Field(default="")
+
+    # Platform camera registry (internal, no auth):
+    #   GET {camera_registry_url}/cameras/by-uc/{source_uc}
+    #   -> {"uc_id": "uc1", "camera_ids": ["<uuid>", ...]}
+    camera_registry_url: str = Field(default="")
+    source_uc: str = Field(default="uc1")
+    camera_refresh_s: float = Field(default=60.0)
+    camera_registry_timeout_s: float = Field(default=5.0)
 
     @property
     def redis_url(self) -> str:

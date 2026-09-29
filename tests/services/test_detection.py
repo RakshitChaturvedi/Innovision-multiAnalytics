@@ -4,7 +4,6 @@ from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
-from services.detection.src.config import settings
 from services.detection.src.detector import RawDetection
 from services.detection.src.face_estimator import FaceEstimator
 from services.detection.src.filtering import DetectionFilter, FilteredTrack
@@ -72,19 +71,19 @@ class TestFaceEstimatorAndFilter(unittest.TestCase):
         from services.detection.src.tracker import TrackedDetection
 
         estimator = FaceEstimator()
-        filter_obj = DetectionFilter(face_estimator=estimator, min_confidence=0.5)
+        filter_obj = DetectionFilter(face_estimator=estimator)
 
         tracked = [
             # High confidence, valid box
             TrackedDetection(track_id=1, x1=100, y1=100, x2=200, y2=300, confidence=0.85, class_id=0),
-            # Low confidence -> should be filtered out
+            # Low confidence tracked box is kept (no post-tracking re-filter)
             TrackedDetection(track_id=2, x1=100, y1=100, x2=200, y2=300, confidence=0.3, class_id=0),
             # Invalid / degenerate bbox -> should be filtered out
             TrackedDetection(track_id=3, x1=200, y1=300, x2=100, y2=100, confidence=0.9, class_id=0),
         ]
 
         filtered = filter_obj.apply(tracked, frame_width=1000, frame_height=1000)
-        self.assertEqual(len(filtered), 1)
+        self.assertEqual([f.track_id for f in filtered], [1, 2])
         self.assertEqual(filtered[0].track_id, 1)
         self.assertEqual(filtered[0].class_label, "person")
         self.assertAlmostEqual(filtered[0].bbox.x1, 0.1)
@@ -136,7 +135,7 @@ class TestDetectionConsumer(unittest.IsolatedAsyncioTestCase):
         from services.detection.src.consumer import DetectionConsumer
 
         consumer = DetectionConsumer()
-        self.assertEqual(consumer.streams, [f"frames:{settings.test_camera_id}"])
+        self.assertEqual(consumer.streams, [])  # cameras come from discovery
         self.assertFalse(consumer.auto_ack)
 
     @patch("services.detection.src.consumer.create_async_engine")
@@ -146,7 +145,7 @@ class TestDetectionConsumer(unittest.IsolatedAsyncioTestCase):
         consumer = DetectionConsumer()
         consumer.redis = AsyncMock()
 
-        stream = consumer.streams[0]
+        stream = "frames:cam-1"
         await consumer.ack(stream, "1234-0")
         consumer.redis.xack.assert_called_once_with(
             stream, consumer.group_name, "1234-0"
@@ -160,7 +159,7 @@ class TestDetectionConsumer(unittest.IsolatedAsyncioTestCase):
         consumer.redis = AsyncMock()
         consumer.process = AsyncMock()
 
-        stream = consumer.streams[0]
+        stream = "frames:cam-1"
         await consumer._handle(stream, "1234-0", {"data": "{}"})
         consumer.process.assert_called_once_with("1234-0", {"data": "{}"}, stream)
         # Verify redis.xack was NOT called prematurely
