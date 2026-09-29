@@ -218,3 +218,9 @@ __marimo__/
 .streamlit/secrets.toml
 .DS_Store
 .DS_Store
+
+# platform wiring tools: camera test frames and snapshots are photos, never commit
+camera_test_*.jpg
+snapshot_*.png
+logs/
+diagnostics_*.zip
