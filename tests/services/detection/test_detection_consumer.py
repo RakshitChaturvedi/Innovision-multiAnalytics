@@ -1,6 +1,7 @@
-"""DetectionConsumer behaviour. Everything here runs on FAKES: fake YOLO
-detector, IoU-based fake ByteTrack (tests/conftest.py), in-memory Redis and
-MinIO stand-ins. No real Redis, Postgres, MinIO or model is involved."""
+"""DetectionConsumer behaviour with a fake YOLO detector and in-memory Redis
+and MinIO stand-ins. Tracking is the REAL ultralytics ByteTrack when the
+package is installed; otherwise tests/conftest.py substitutes an IoU-based
+fake (the low-confidence test below asserts the real one)."""
 import asyncio
 import json
 import logging
@@ -212,11 +213,30 @@ async def test_expired_frame_is_acked_and_counted_not_retried(caplog):
 
 
 async def test_low_confidence_tracked_box_is_still_published():
-    c, redis = make_consumer(detector=FakeDetector(conf=0.35))  # < old 0.5 floor
-    await feed(c, redis, CAM_A, 0)
+    """A box below the old 0.5 re-filter keeps an EXISTING track alive. Real
+    ByteTrack never starts a track from a 0.35 box (new_track_thresh), but
+    matches it to a confirmed track in its low-score association pass."""
+    from ultralytics.trackers import BYTETracker
+
+    assert BYTETracker.__module__.startswith("ultralytics."), "needs the real ByteTrack"
+
+    detector = FakeDetector(conf=0.9)
+    c, redis = make_consumer(detector=detector)
+    for seq in range(3):
+        await feed(c, redis, CAM_A, seq)
     await run_ready_batches(c)
+    confirmed = redis.events()[-1].tracks
+    assert len(confirmed) == 1
+    track_id = confirmed[0].track_id
+    redis.stream.clear()
+
+    detector.conf = 0.35  # < old 0.5 floor, >= track_low_thresh
+    await feed(c, redis, CAM_A, 3)
+    await run_ready_batches(c)
+
     (event,) = redis.events()
     assert len(event.tracks) == 1
+    assert event.tracks[0].track_id == track_id
     assert event.tracks[0].confidence == pytest.approx(0.35)
 
 

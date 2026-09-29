@@ -103,10 +103,30 @@ class BaseStreamConsumer(ABC):
         """connect -> create groups -> drain own pending -> reclaim task -> loop"""
         from shared.config import settings
 
-        self.redis = aioredis.from_url(settings.redis_url(), health_check_interval=30)
-        await self._ensure_groups(self.streams)
+        # stop() may already have run (it can race a start() still in
+        # progress): honour it. Never clear the event here, or background
+        # tasks dying from then on would be logged as crashes and restarted.
+        if self._shutdown.is_set():
+            logger.info("%s stopped before it started", self.consumer_name)
+            return
 
-        self._shutdown.clear()
+        # Not published on self.redis until we know we are not stopping, so a
+        # racing stop() never closes a client this method is still using.
+        client = aioredis.from_url(settings.redis_url(), health_check_interval=30)
+        covered = list(self.streams)
+        try:
+            await self._ensure_groups(covered, client)
+        except BaseException:
+            await client.aclose()
+            raise
+        if self._shutdown.is_set():
+            await client.aclose()
+            logger.info("%s stopped before it started", self.consumer_name)
+            return
+        self.redis = client
+        # add_stream() while self.redis was still None only recorded the stream
+        await self._ensure_groups([s for s in self.streams if s not in covered])
+
         self._running = True
         self._started = True
         self._loop_done.clear()
@@ -205,19 +225,20 @@ class BaseStreamConsumer(ABC):
     # groups
     # ------------------------------------------------------------------
 
-    async def _ensure_group(self, stream: str) -> None:
-        assert self.redis is not None
+    async def _ensure_group(self, stream: str, client=None) -> None:
+        client = client if client is not None else self.redis
+        assert client is not None
         try:
-            await self.redis.xgroup_create(
+            await client.xgroup_create(
                 stream, self.group_name, id=self.group_start_id, mkstream=True
             )
         except ResponseError as exc:
             if "BUSYGROUP" not in str(exc):
                 raise
 
-    async def _ensure_groups(self, streams: list[str]) -> None:
+    async def _ensure_groups(self, streams: list[str], client=None) -> None:
         for stream in list(streams):
-            await self._ensure_group(stream)
+            await self._ensure_group(stream, client)
 
     # ------------------------------------------------------------------
     # main loop

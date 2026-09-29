@@ -12,6 +12,7 @@ from shared.schemas.events import ZoneEvent
 from ...policies.intruder_policy import (
     alert_type_for,
     decide,
+    resolve_identity_conflicts,
     severity_for,
 )
 from .config import config
@@ -97,10 +98,10 @@ class IntruderProcessor:
             [r["person_id"] for r in rows if r["person_id"]], ev.timestamp
         )
 
-        conflicted = await self._conflicting_identities(ev, zone, rows)
+        conflicted, unverified = await self._conflicting_identities(ev, zone, rows)
 
         classification, chosen = decide(
-            rows, zone["type"], authorized, blocklisted, conflicted
+            rows, zone["type"], authorized, blocklisted, conflicted, unverified
         )
 
         if classification is None:
@@ -137,38 +138,42 @@ class IntruderProcessor:
 
     async def _conflicting_identities(
         self, ev: ZoneEvent, zone: dict, rows: list[dict]
-    ) -> set[str]:
+    ) -> tuple[set[str], set[str]]:
         """
-        Enrolled persons of this track that are ALSO matched on another
-        track of the same camera in the same window. One person cannot be
-        two tracks at once, so at least one of those matches is wrong; in a
-        restricted zone both tracks are then treated as unverified.
+        (conflicted, unverified) enrolled persons of this track that are
+        ALSO matched on another track of the same camera in the same window
+        (see resolve_identity_conflicts). One person cannot be two tracks at
+        once: a clearly dominant track keeps the identity, the others lose
+        it; without a clear winner every track involved fails closed.
         """
 
         if zone["type"] != "restricted":
-            return set()
+            return set(), set()
 
         person_ids = sorted({
             r["person_id"] for r in rows
             if r["identity_tag"] == "enrolled" and r["person_id"]
         })
         if not person_ids:
-            return set()
+            return set(), set()
 
-        conflicted = await self._repo.persons_on_other_tracks(
+        counts = await self._repo.enrolled_row_counts_by_track(
             str(ev.camera_id),
-            ev.track_id,
             person_ids,
             ev.timestamp - timedelta(seconds=config.RECOGNITION_MAX_AGE_S),
             ev.timestamp + timedelta(seconds=config.RECOGNITION_FUTURE_S),
         )
-        if conflicted:
+        conflicted, unverified = resolve_identity_conflicts(ev.track_id, counts)
+        if conflicted or unverified:
             self.metrics["identity_conflict"] += 1
             logger.warning(
-                "intruder_identity_conflict camera=%s track=%s zone=%s persons=%s",
+                "intruder_identity_conflict camera=%s track=%s zone=%s "
+                "no_clear_winner=%s owned_by_other_track=%s counts=%s",
                 ev.camera_id, ev.track_id, ev.zone_id, sorted(conflicted),
+                sorted(unverified),
+                {p: counts[p] for p in sorted(conflicted | unverified)},
             )
-        return conflicted
+        return conflicted, unverified
 
     async def _lookup_recognitions(self, ev: ZoneEvent, zone: dict) -> list[dict]:
         """

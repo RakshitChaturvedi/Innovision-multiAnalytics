@@ -229,7 +229,10 @@ async def test_add_and_remove_stream_at_runtime(redis):
         await wait_until(lambda: (s2, ) == tuple(x[0] for x in c.calls[-1:]))
 
         await c.remove_stream(s1)
-        await asyncio.sleep(0.1)  # let an in-progress blocking read finish
+        # Let an in-progress blocking read (still including s1) finish. Redis
+        # checks blocking timeouts at `hz` resolution (100 ms by default), so a
+        # block_ms=50 read really lasts up to ~150 ms; 0.1 s here was flaky.
+        await asyncio.sleep(0.3)
         before = len(c.calls)
         await redis.xadd(s1, payload())
         await asyncio.sleep(0.3)

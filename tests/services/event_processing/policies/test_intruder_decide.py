@@ -2,6 +2,7 @@ from services.event_processing.src.policies.intruder_policy import (
     alert_type_for,
     classify_intruder,
     decide,
+    resolve_identity_conflicts,
     severity_for,
 )
 from shared.schemas.enums import AlertSeverity
@@ -90,3 +91,52 @@ def test_decide_blocklisted_on_lower_similarity_row_still_wins():
     rows = [row("unknown", sim=0.99), row("enrolled", "p2", 0.3)]
     c, chosen = decide(rows, "monitored", [], {"p2"})
     assert c.reason == "blocklisted" and chosen["person_id"] == "p2"
+
+
+def test_resolve_dominant_track_keeps_identity_others_lose_it():
+    counts = {"p": {7: 38, 8: 2}}
+    assert resolve_identity_conflicts(7, counts) == (set(), set())
+    assert resolve_identity_conflicts(8, counts) == (set(), {"p"})
+
+
+def test_resolve_exactly_twice_is_enough_and_three_tracks_use_runner_up():
+    assert resolve_identity_conflicts(8, {"p": {7: 4, 8: 2}}) == (set(), {"p"})
+    counts = {"p": {7: 10, 8: 5, 9: 1}}
+    assert resolve_identity_conflicts(7, counts) == (set(), set())
+    assert resolve_identity_conflicts(9, counts) == (set(), {"p"})
+
+
+def test_resolve_tie_or_small_margin_conflicts_every_track():
+    for a, b in ((5, 4), (4, 4), (6, 4)):
+        counts = {"p": {7: a, 8: b}}
+        assert resolve_identity_conflicts(7, counts) == ({"p"}, set())
+        assert resolve_identity_conflicts(8, counts) == ({"p"}, set())
+
+
+def test_resolve_single_track_or_absent_track_is_no_conflict():
+    assert resolve_identity_conflicts(7, {"p": {7: 3}}) == (set(), set())
+    assert resolve_identity_conflicts(9, {"p": {7: 3, 8: 1}}) == (set(), set())
+
+
+def test_decide_unverified_rows_only_fail_closed():
+    rows = [row("enrolled", "p1", 0.9)] * 2
+    c, chosen = decide(rows, "restricted", ["p1"], set(), unverified_person_ids={"p1"})
+    assert c.reason == "unidentified_in_restricted" and chosen is None
+
+
+def test_decide_unverified_rows_still_count_against_majority():
+    rows = [row("enrolled", "p1")] * 2 + [row("enrolled", "p2")]
+    c, _ = decide(rows, "restricted", ["p1", "p2"], set(), unverified_person_ids={"p1"})
+    assert c.reason == "unidentified_in_restricted"
+
+
+def test_decide_unverified_falls_back_to_other_identified_rows():
+    rows = [row("enrolled", "p1", 0.95), row("visitor", sim=0.6)]
+    c, chosen = decide(rows, "restricted", [], set(), unverified_person_ids={"p1"})
+    assert c.reason == "visitor_in_restricted" and chosen["similarity_score"] == 0.6
+
+
+def test_decide_blocklist_beats_unverified():
+    rows = [row("enrolled", "p1", 0.9)]
+    c, _ = decide(rows, "restricted", ["p1"], {"p1"}, unverified_person_ids={"p1"})
+    assert c.reason == "blocklisted"
