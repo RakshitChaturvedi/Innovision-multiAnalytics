@@ -43,7 +43,7 @@ Design notes
 
 from alembic import op
 import sqlalchemy as sa
-from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy.dialects.postgresql import ENUM, JSONB, UUID
 from pgvector.sqlalchemy import Vector
 
 
@@ -150,7 +150,7 @@ def upgrade() -> None:
         # Reuses the identity_tag enum type created in 0001_base.py.
         sa.Column(
             "identity_tag",
-            sa.Enum("enrolled", "visitor", "unknown", name="identity_tag", create_type=False),
+            ENUM("enrolled", "visitor", "unknown", name="identity_tag", create_type=False),
             nullable=False,
         ),
         sa.Column(

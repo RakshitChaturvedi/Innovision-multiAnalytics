@@ -5,9 +5,7 @@ import pytest
 from pydantic import ValidationError
 
 from shared.schemas import (
-    AlertSeverity,
     AlertStatus,
-    AlertType,
     BoundingBox,
     CrowdFrameEvent,
     CrowdModel,

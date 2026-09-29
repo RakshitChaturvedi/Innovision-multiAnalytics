@@ -63,8 +63,9 @@ class FakeRepo:
         )
         return OpenBreach(i, zone_id, camera_id, False)
 
-    async def mark_alert_published(self, breach_id):
+    async def mark_alert_published(self, breach_id, alert_id):
         self.rows[breach_id]["alert_published"] = True
+        self.rows[breach_id]["alert_id"] = alert_id
 
     async def resolve_breach(self, breach_id, timestamp, reason):
         if self.fail_resolve:
@@ -188,7 +189,7 @@ async def test_sustained_breach_alerts_exactly_once():
     assert alert.metadata["threshold"] == 10
     assert alert.metadata["zone_id"] == ZONE and alert.metadata["zone_name"] == "Lobby"
     assert repo.rows[breach_id]["alert_published"] is True
-
+    assert repo.rows[breach_id]["alert_id"] == str(alert.alert_id)
 
 async def test_drop_below_threshold_resolves_after_exit_seconds():
     alerts = FakeAlerts()

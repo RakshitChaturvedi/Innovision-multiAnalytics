@@ -2,7 +2,7 @@
 
 from alembic import op
 import sqlalchemy as sa
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import ENUM, UUID
 
 
 revision = "0004_intruder"
@@ -144,7 +144,7 @@ def upgrade() -> None:
 
         sa.Column(
             "alert_status",
-            sa.Enum(
+            ENUM(
                 "pending",
                 "acknowledged",
                 "resolved",

@@ -1,10 +1,8 @@
 """Headcount against REAL Postgres and Redis.
 
 Skipped unless HEADCOUNT_TEST_DATABASE_URL (postgresql+asyncpg://...) and
-HEADCOUNT_TEST_REDIS_URL (redis://host:port/db) are set. Applies migrations
-0005 + 0006 directly (0001-0003 need pgvector, which headcount does not use).
+HEADCOUNT_TEST_REDIS_URL (redis://host:port/db) are set. Runs the full Alembic graph (needs pgvector) against the target database.
 """
-import importlib.util
 import json
 import os
 import uuid
@@ -13,8 +11,8 @@ from pathlib import Path
 
 import pytest
 import redis.asyncio as aioredis
-from alembic.migration import MigrationContext
-from alembic.operations import Operations
+from alembic import command
+from alembic.config import Config
 from sqlalchemy import create_engine, text
 
 from services.event_processing.src.workers.headcount import headcount_store
@@ -33,30 +31,28 @@ pytestmark = pytest.mark.skipif(
     not (DB_URL and REDIS_URL), reason="real Postgres/Redis not configured"
 )
 
-VERSIONS = Path(__file__).resolve().parents[2] / "migrations" / "versions"
+ROOT = Path(__file__).resolve().parents[2]
 
 
-def _migration(name):
-    spec = importlib.util.spec_from_file_location(name, VERSIONS / f"{name}.py")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+def _alembic(monkeypatch, *args):
+    """Run the real Alembic graph (needs pgvector: 0001-0003 use it)."""
+    monkeypatch.setenv("DATABASE_URL", DB_URL)
+    cfg = Config(str(ROOT / "migrations" / "alembic.ini"))
+    cfg.set_main_option("script_location", str(ROOT / "migrations"))
+    getattr(command, args[0])(cfg, *args[1:])
 
 
-def _run(engine, fn):
+def _reset_schema(engine):
     with engine.begin() as conn:
-        with Operations.context(MigrationContext.configure(conn)):
-            fn()
+        conn.execute(text("DROP SCHEMA public CASCADE"))
+        conn.execute(text("CREATE SCHEMA public"))
 
 
 @pytest.fixture
-def sync_engine():
+def sync_engine(monkeypatch):
     engine = create_engine(DB_URL.replace("+asyncpg", "+psycopg2"))
-    with engine.begin() as conn:
-        conn.execute(text("DROP TABLE IF EXISTS headcount_breach_events, headcount_snapshots CASCADE"))
-        conn.execute(text("CREATE EXTENSION IF NOT EXISTS pgcrypto"))
-    _run(engine, _migration("0005_headcount").upgrade)
-    _run(engine, _migration("0006_headcount_breach_state").upgrade)
+    _reset_schema(engine)
+    _alembic(monkeypatch, "upgrade", "head")
     yield engine
     engine.dispose()
 
@@ -77,16 +73,15 @@ async def redis_client():
     await r.aclose()
 
 
-def test_migration_upgrade_downgrade_roundtrip(sync_engine):
-    _run(sync_engine, _migration("0006_headcount_breach_state").downgrade)
-    _run(sync_engine, _migration("0006_headcount_breach_state").upgrade)
+def test_migration_upgrade_downgrade_roundtrip(monkeypatch, sync_engine):
+    _alembic(monkeypatch, "downgrade", "base")
+    _alembic(monkeypatch, "upgrade", "head")
 
 
-def test_migration_supersedes_duplicate_open_rows():
+def test_migration_supersedes_duplicate_open_rows(monkeypatch):
     engine = create_engine(DB_URL.replace("+asyncpg", "+psycopg2"))
-    with engine.begin() as conn:
-        conn.execute(text("DROP TABLE IF EXISTS headcount_breach_events, headcount_snapshots CASCADE"))
-    _run(engine, _migration("0005_headcount").upgrade)
+    _reset_schema(engine)
+    _alembic(monkeypatch, "upgrade", "0005_headcount")
     z, c = str(uuid.uuid4()), str(uuid.uuid4())
     with engine.begin() as conn:
         for i in range(3):  # old code could leave several 'pending' rows per zone
@@ -94,7 +89,7 @@ def test_migration_supersedes_duplicate_open_rows():
                 "INSERT INTO headcount_breach_events (id, zone_id, camera_id, count, threshold, timestamp) "
                 "VALUES (gen_random_uuid(), :z, :c, 12, 10, now() + make_interval(secs => :i))"
             ), dict(z=z, c=c, i=i))
-    _run(engine, _migration("0006_headcount_breach_state").upgrade)
+    _alembic(monkeypatch, "upgrade", "head")
     with engine.connect() as conn:
         n = conn.execute(text("SELECT count(*) FROM headcount_breach_events WHERE status='open'")).scalar()
     assert n == 1
@@ -106,7 +101,11 @@ async def test_open_breach_conflict_returns_same_row(store, sync_engine):
     a = await store.open_breach(z, c, 12, 10, T0)
     b = await store.open_breach(z, c, 13, 10, T0 + timedelta(seconds=1))
     assert a.id == b.id and a.alert_published is False
-    await store.mark_alert_published(a.id)
+    aid = str(uuid.uuid4())
+    await store.mark_alert_published(a.id, aid)
+    with sync_engine.connect() as conn:
+        assert str(conn.execute(text(
+            "SELECT alert_id FROM headcount_breach_events WHERE id = CAST(:i AS uuid)"), dict(i=a.id)).scalar()) == aid
     assert (await store.open_breach(z, c, 12, 10, T0)).alert_published is True
     assert [o.id for o in await store.load_open_breaches()] == [a.id]
 

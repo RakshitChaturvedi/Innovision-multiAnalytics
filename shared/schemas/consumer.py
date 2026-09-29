@@ -18,7 +18,7 @@ import json
 import logging
 import random
 from abc import ABC, abstractmethod
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any, Awaitable, Callable, Optional, cast
 
 import redis.asyncio as aioredis
 from redis.exceptions import ResponseError
@@ -27,7 +27,7 @@ from shared.errors import PermanentError
 
 logger = logging.getLogger(__name__)
 
-Item = tuple[str, str, Optional[dict]]  # (stream, msg_id, data)
+Item = tuple[str, str, dict]  # (stream, msg_id, data); empty payloads are acked as lost before this
 
 
 def _text(v: Any) -> str:
@@ -173,8 +173,13 @@ class BaseStreamConsumer(ABC):
 
     async def ack(self, stream: str, msg_id: str | bytes) -> None:
         assert self.redis is not None
-        await self.redis.xack(stream, self.group_name, msg_id)
+        await self._r.xack(stream, self.group_name, msg_id)
         self._counters["processed"] += 1
+
+    @property
+    def _r(self) -> aioredis.Redis:
+        """self.redis for typing only; still None before start(), as before."""
+        return cast(aioredis.Redis, self.redis)
 
     def partition_key(self, stream: str, data: dict) -> str:
         """Messages with the same key are processed strictly in order."""
@@ -221,7 +226,7 @@ class BaseStreamConsumer(ABC):
                 await asyncio.sleep(self.block_ms / 1000)
                 continue
             try:
-                result = await self.redis.xreadgroup(
+                result: Any = await self._r.xreadgroup(
                     groupname=self.group_name,
                     consumername=self.consumer_name,
                     streams={s: ">" for s in streams},
@@ -270,7 +275,7 @@ class BaseStreamConsumer(ABC):
             "acking (data lost)", self.consumer_name, msg_id, stream,
         )
         try:
-            await self.redis.xack(stream, self.group_name, msg_id)
+            await self._r.xack(stream, self.group_name, msg_id)
         except Exception:
             logger.exception("%s could not ack lost message %s", self.consumer_name, msg_id)
 
@@ -371,7 +376,7 @@ class BaseStreamConsumer(ABC):
     async def _dead_letter(self, stream: str, msg_id: str, data: Optional[dict], error: str) -> None:
         # XADD first, then XACK: a crash in between duplicates a DLQ entry
         # but never loses the message.
-        await self.redis.xadd(
+        await self._r.xadd(
             f"{stream}:dlq",
             {
                 "data": self._payload_text(data),
@@ -380,7 +385,7 @@ class BaseStreamConsumer(ABC):
                 "msg_id": msg_id,
             },
         )
-        await self.redis.xack(stream, self.group_name, msg_id)
+        await self._r.xack(stream, self.group_name, msg_id)
         self._counters["dlq"] += 1
         logger.warning(
             "%s dead-lettered %s %s to %s:dlq error=%s",
@@ -401,7 +406,7 @@ class BaseStreamConsumer(ABC):
         for stream in list(self.streams):
             cursor = "0"
             while self._running:
-                result = await self.redis.xreadgroup(
+                result: Any = await self._r.xreadgroup(
                     groupname=self.group_name,
                     consumername=self.consumer_name,
                     streams={stream: cursor},
@@ -432,7 +437,7 @@ class BaseStreamConsumer(ABC):
         for stream in list(self.streams):
             cursor = "0-0"
             while self._running:
-                res = await self.redis.xautoclaim(
+                res: Any = await self._r.xautoclaim(
                     stream,
                     self.group_name,
                     self.consumer_name,
@@ -490,7 +495,7 @@ class BaseStreamConsumer(ABC):
 
     async def _delivery_counts(self, stream: str, ids: list[str]) -> dict[str, int]:
         """times_delivered per id (XAUTOCLAIM has already counted this claim)."""
-        async with self.redis.pipeline(transaction=False) as pipe:
+        async with self._r.pipeline(transaction=False) as pipe:
             for msg_id in ids:
                 pipe.xpending_range(stream, self.group_name, min=msg_id, max=msg_id, count=1)
             results = await pipe.execute()
