@@ -3,6 +3,8 @@ from services.event_processing.src.policies.intruder_policy import (
     classify_intruder,
     decide,
     resolve_identity_conflicts,
+    resolve_ownership,
+    trim_to_current_identity,
     severity_for,
 )
 from shared.schemas.enums import AlertSeverity
@@ -52,7 +54,8 @@ def test_decide_single_authorized_row_among_others_does_not_authorize():
 
 
 def test_decide_authorized_strict_majority_authorizes():
-    rows = [row("enrolled", "p1", 0.8)] * 5 + [row("visitor", "p1", 0.62)]
+    # rows are in time order: the visitor row is a blip, not the latest identity
+    rows = [row("enrolled", "p1", 0.8)] * 3 + [row("visitor", "p1", 0.62)] + [row("enrolled", "p1", 0.8)] * 2
     c, chosen = decide(rows, "restricted", ["p1"], set())
     assert c is None and chosen["person_id"] == "p1"
 
@@ -140,3 +143,62 @@ def test_decide_blocklist_beats_unverified():
     rows = [row("enrolled", "p1", 0.9)]
     c, _ = decide(rows, "restricted", ["p1"], {"p1"}, unverified_person_ids={"p1"})
     assert c.reason == "blocklisted"
+
+
+# --- recency / id switch -------------------------------------------------
+
+from datetime import datetime, timedelta, timezone  # noqa: E402
+
+T = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+
+def at(s, tag, person=None, sim=0.9):
+    return {**row(tag, person, sim), "timestamp": T + timedelta(seconds=s)}
+
+
+def test_trim_drops_rows_before_an_id_switch():
+    rows = [at(0, "enrolled", "p"), at(1, "enrolled", "p"), at(2.6, "visitor", "q")]
+    assert trim_to_current_identity(rows) == [rows[2]]
+
+
+def test_trim_ignores_unknown_rows():
+    rows = [at(0, "enrolled", "p"), at(1, "unknown"), at(2, "enrolled", "p")]
+    assert trim_to_current_identity(rows) == rows
+
+
+def test_switch_to_a_visitor_classifies_from_the_new_rows_only():
+    rows = [at(t / 10, "enrolled", "p") for t in range(14)] + [at(2.6, "visitor", "q", 0.62)]
+    c, _ = decide(rows, "restricted", ["p"], set())
+    assert c.reason == "visitor_in_restricted"
+
+
+def test_trailing_single_visitor_row_is_a_switch_fail_closed():
+    rows = [at(i, "enrolled", "p") for i in range(5)] + [at(5, "visitor", "p", 0.62)]
+    c, _ = decide(rows, "restricted", ["p"], set())
+    assert c.reason == "visitor_in_restricted"
+
+
+def test_switch_towards_authorized_keeps_older_contrary_rows():
+    """Trimming only ever fails closed: 2 rows of p (owned elsewhere) then 1 of
+    authorized q is not a q majority."""
+    rows = [at(0, "enrolled", "p"), at(1, "enrolled", "p"), at(2, "enrolled", "q")]
+    c, _ = decide(rows, "restricted", ["p", "q"], set(), unverified_person_ids={"p"})
+    assert c.reason == "unidentified_in_restricted"
+
+
+def test_ownership_goes_to_recent_evidence_not_old_rows():
+    """Track 2 had p at 0-1.3 then switched to a visitor; track 3 has p now."""
+    t2 = [at(i / 10, "enrolled", "p") for i in range(14)] + [at(2.6, "visitor", "q")]
+    t3 = [at(5.3 + i / 10, "enrolled", "p") for i in range(8)]
+    assert resolve_ownership(3, ["p"], {2: t2, 3: t3}) == (set(), set())
+    assert resolve_ownership(2, ["p"], {2: t2, 3: t3}) == (set(), {"p"})
+
+
+def test_track_without_recent_evidence_does_not_own():
+    assert resolve_ownership(8, ["p"], {7: [at(0, "enrolled", "p")], 8: []}) == (set(), {"p"})
+    assert resolve_ownership(8, ["p"], {}) == (set(), set())
+
+
+def test_recent_evidence_without_winner_fails_closed():
+    rows = {7: [at(0, "enrolled", "p")] * 3, 8: [at(0, "enrolled", "p")] * 2}
+    assert resolve_ownership(8, ["p"], rows) == ({"p"}, set())

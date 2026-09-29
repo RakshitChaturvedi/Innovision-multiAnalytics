@@ -12,7 +12,7 @@ from shared.errors import PermanentError
 from shared.platform_contracts.alert_event import AlertEvent
 from shared.schemas.enums import EventType
 
-from .conftest import T0, alerts, zone_event
+from .conftest import T0, alerts, settle, zone_event
 
 
 async def test_unknown_person_alerts(db, make_processor, redis_client):
@@ -21,6 +21,7 @@ async def test_unknown_person_alerts(db, make_processor, redis_client):
     proc, _ = make_processor()
 
     await proc.handle(zone_event())
+    await settle(proc)
 
     (alert,) = await alerts(redis_client)
     assert alert["alert_type"] == "intruder"
@@ -40,6 +41,7 @@ async def test_no_recognition_fails_closed(db, make_processor, redis_client, sle
     proc, _ = make_processor()
 
     await proc.handle(zone_event())
+    await settle(proc)
 
     (alert,) = await alerts(redis_client)
     assert alert["alert_type"] == "intruder"
@@ -65,6 +67,7 @@ async def test_authorized_enrolled_never_alerts(db, make_processor, redis_client
     proc, _ = make_processor()
 
     await proc.handle(zone_event())
+    await settle(proc)
 
     assert await alerts(redis_client) == []
     assert await db.intruder_events() == []
@@ -79,6 +82,7 @@ async def test_authorized_majority_wins_over_better_unknown_row(db, make_process
     proc, _ = make_processor()
 
     await proc.handle(zone_event())
+    await settle(proc)
 
     assert await alerts(redis_client) == []
 
@@ -93,6 +97,7 @@ async def test_single_authorized_row_without_majority_fails_closed(db, make_proc
     proc, _ = make_processor()
 
     await proc.handle(zone_event())
+    await settle(proc)
 
     (alert,) = await alerts(redis_client)
     assert alert["metadata"]["classification_reason"] == "unidentified_in_restricted"
@@ -112,11 +117,12 @@ async def test_dominant_track_keeps_identity_stray_track_alerts(db, make_process
 
     await proc.handle(zone_event(track=7))
     await proc.handle(zone_event(track=8, seq=11))
+    assert proc.metrics["identity_conflict"] == 1  # at the zone events
+    await settle(proc)
 
     (alert,) = await alerts(redis_client)
     assert alert["metadata"]["track_id"] == 8
     assert alert["metadata"]["classification_reason"] == "unidentified_in_restricted"
-    assert proc.metrics["identity_conflict"] == 1
 
 
 @pytest.mark.parametrize("counts", [(5, 4), (4, 4), (6, 4)])
@@ -133,11 +139,12 @@ async def test_same_person_on_two_tracks_without_clear_winner_fails_closed_for_b
 
     await proc.handle(zone_event(track=7))
     await proc.handle(zone_event(track=8, seq=11))
+    assert proc.metrics["identity_conflict"] == 2  # at the zone events
+    await settle(proc)
 
     got = await alerts(redis_client)
     assert sorted(a["metadata"]["track_id"] for a in got) == [7, 8]
     assert {a["metadata"]["classification_reason"] for a in got} == {"unidentified_in_restricted"}
-    assert proc.metrics["identity_conflict"] == 2
 
 
 async def test_exactly_twice_the_runner_up_keeps_identity(db, make_processor, redis_client):
@@ -151,6 +158,7 @@ async def test_exactly_twice_the_runner_up_keeps_identity(db, make_processor, re
 
     await proc.handle(zone_event(track=7))
     await proc.handle(zone_event(track=8, seq=11))
+    await settle(proc)
 
     (alert,) = await alerts(redis_client)
     assert alert["metadata"]["track_id"] == 8
@@ -170,6 +178,7 @@ async def test_losing_rows_still_count_against_the_majority(db, make_processor, 
     proc, _ = make_processor()
 
     await proc.handle(zone_event(track=8, seq=11))
+    await settle(proc)
 
     (alert,) = await alerts(redis_client)
     assert alert["metadata"]["classification_reason"] == "unidentified_in_restricted"
@@ -200,6 +209,7 @@ async def test_authorized_person_alone_never_alerts(db, make_processor, redis_cl
     proc, _ = make_processor()
 
     await proc.handle(zone_event(track=7))
+    await settle(proc)
 
     assert await alerts(redis_client) == []
     assert proc.metrics["identity_conflict"] == 0
@@ -215,6 +225,7 @@ async def test_authorized_person_alone_with_one_visitor_row_never_alerts(db, mak
     proc, _ = make_processor()
 
     await proc.handle(zone_event(track=7))
+    await settle(proc)
 
     assert await alerts(redis_client) == []
 
@@ -233,6 +244,7 @@ async def test_same_person_on_other_track_outside_window_is_no_conflict(db, make
     )
 
     await proc.handle(zone_event(track=7))
+    await settle(proc)
 
     assert await alerts(redis_client) == []
 
@@ -258,6 +270,7 @@ async def test_enrolled_unauthorized_is_restricted_entry(db, make_processor, red
     proc, _ = make_processor()
 
     await proc.handle(zone_event())
+    await settle(proc)
 
     (alert,) = await alerts(redis_client)
     assert alert["alert_type"] == "restricted_entry"
@@ -269,6 +282,7 @@ async def test_visitor_is_restricted_entry(db, make_processor, redis_client):
     await db.recognition("visitor")
     proc, _ = make_processor()
     await proc.handle(zone_event())
+    await settle(proc)
     (alert,) = await alerts(redis_client)
     assert alert["alert_type"] == "restricted_entry"
 
@@ -277,16 +291,16 @@ async def test_publish_fails_once_then_retry_yields_exactly_one_alert(db, make_p
     await db.zone()
     await db.recognition("unknown")
     proc, publisher = make_processor(fail_times=1)
-    ev = zone_event()
 
+    await proc.handle(zone_event())
     with pytest.raises(ConnectionError):
-        await proc.handle(ev)
+        await settle(proc)
 
     assert await alerts(redis_client) == []
     (row,) = await db.intruder_events()
     assert row.alert_published is False  # row exists, alert still owed
 
-    await proc.handle(ev)  # redelivery
+    await settle(proc)  # next sweeper pass
 
     (alert,) = await alerts(redis_client)
     (row,) = await db.intruder_events()
@@ -295,11 +309,28 @@ async def test_publish_fails_once_then_retry_yields_exactly_one_alert(db, make_p
     assert publisher.attempts == 2
 
 
+async def test_publish_failure_on_the_stream_is_retried_by_redelivery(db, make_processor, redis_client):
+    """Blocklisted alerts go out inside process(): a failed publish raises and
+    the redelivered message publishes it."""
+    await db.zone()
+    person = await db.person(blocklisted=True)
+    await db.recognition("enrolled", person=person)
+    proc, publisher = make_processor(fail_times=1)
+    ev = zone_event()
+
+    with pytest.raises(ConnectionError):
+        await proc.handle(ev)
+    await proc.handle(ev)
+
+    (alert,) = await alerts(redis_client)
+    assert alert["metadata"]["classification_reason"] == "blocklisted"
+    assert publisher.attempts == 2
+
+
 async def test_crash_after_publish_republishes_same_alert_id(db, make_processor, redis_client, monkeypatch):
     await db.zone()
     await db.recognition("unknown")
     proc, _ = make_processor()
-    ev = zone_event()
 
     real = proc._repo.mark_published
     calls = {"n": 0}
@@ -312,9 +343,10 @@ async def test_crash_after_publish_republishes_same_alert_id(db, make_processor,
 
     monkeypatch.setattr(proc._repo, "mark_published", flaky)
 
+    await proc.handle(zone_event())
     with pytest.raises(ConnectionError):
-        await proc.handle(ev)
-    await proc.handle(ev)
+        await settle(proc)
+    await settle(proc)
 
     sent = await alerts(redis_client)
     assert len(sent) == 2  # at-least-once...
@@ -346,6 +378,7 @@ async def test_concurrent_duplicates_create_one_row_and_one_alert_id(db, pg_sess
 
     ev = zone_event()
     await asyncio.gather(make().handle(ev), make().handle(ev))
+    await settle(make())
 
     assert len(await db.intruder_events()) == 1
     assert len({a["alert_id"] for a in await alerts(redis_client)}) == 1
@@ -366,6 +399,7 @@ async def test_exit_resolves_at_event_time_and_new_intrusion_alerts_again(db, ma
     # same track re-enters: a fresh intrusion, a fresh alert
     await db.recognition("unknown", at=9)
     await proc.handle(zone_event(EventType.ENTERED, at=10, seq=40))
+    await settle(proc)
     assert len(await db.intruder_events()) == 2
     assert len({a["alert_id"] for a in await alerts(redis_client)}) == 2
 
@@ -401,6 +435,7 @@ async def test_recognition_outside_time_window_is_ignored(db, make_processor, re
     proc, _ = make_processor()
 
     await proc.handle(zone_event(at=0))
+    await settle(proc)
 
     (alert,) = await alerts(redis_client)
     assert alert["metadata"]["classification_reason"] == "unidentified_in_restricted"
@@ -412,6 +447,7 @@ async def test_recognition_at_window_edges_counts(db, make_processor, redis_clie
     await db.recognition("enrolled", person=person, at=-30)  # exactly MAX_AGE
     proc, _ = make_processor()
     await proc.handle(zone_event(at=0))
+    await settle(proc)
     assert await alerts(redis_client) == []
 
 
@@ -421,6 +457,7 @@ async def test_recognition_for_other_track_is_ignored(db, make_processor, redis_
     await db.recognition("enrolled", person=person, track=99)
     proc, _ = make_processor()
     await proc.handle(zone_event(track=7))
+    await settle(proc)
     assert len(await alerts(redis_client)) == 1
 
 

@@ -1,3 +1,4 @@
+import asyncio
 import logging
 
 import redis.asyncio as aioredis
@@ -11,6 +12,7 @@ from shared.alerting.publisher import AlertPublisher
 from shared.errors import PermanentError
 from shared.schemas.consumer import BaseStreamConsumer
 from shared.schemas.events import ZoneEvent
+from shared.supervisor import supervise
 
 from .config import config
 from .processor import IntruderProcessor
@@ -41,6 +43,7 @@ class IntruderConsumer(BaseStreamConsumer):
 
         self._publisher: aioredis.Redis | None = None
         self._processor: IntruderProcessor | None = None
+        self._sweeper: asyncio.Task | None = None
 
     async def start(self):
 
@@ -57,15 +60,44 @@ class IntruderConsumer(BaseStreamConsumer):
             ),
         )
 
+        self._sweeper = asyncio.create_task(
+            supervise(
+                "intruder_candidate_sweeper",
+                self._sweep_forever,
+                stopping=self._shutdown,
+            )
+        )
+
         logger.info(
             "intruder_consumer_ready"
         )
 
         await super().start()
 
+    async def _sweep_forever(self):
+        """Wall-clock loop over grace-period candidates; crashes propagate
+        to the supervisor, which logs and restarts it."""
+        while not self._shutdown.is_set():
+            await self._processor.sweep()
+            try:
+                await asyncio.wait_for(
+                    self._shutdown.wait(), config.INTRUDER_SWEEP_INTERVAL_S
+                )
+            except TimeoutError:
+                pass
+
     async def stop(self):
 
+        self._shutdown.set()
+        if self._sweeper is not None:
+            self._sweeper.cancel()
+            await asyncio.gather(self._sweeper, return_exceptions=True)
+            self._sweeper = None
+
         await super().stop()
+
+        if self._publisher is not None:
+            await self._publisher.aclose()
 
         await self._engine.dispose()
 

@@ -51,5 +51,21 @@ class IntruderConfig(ServiceSettings):
         default=0.0, ge=0, validation_alias="INTRUDER_ALERT_COOLDOWN_S"
     )
 
+    # Identity ownership across tracks only counts rows from the last
+    # RECOGNITION_RECENT_S (event time) before the decision.
+    RECOGNITION_RECENT_S: float = Field(
+        default=5.0, validation_alias="RECOGNITION_RECENT_S"
+    )
+
+    # Restricted zone without an authorized winner: wait this long (event
+    # time) for more recognition rows before alerting. Blocklist: no wait.
+    INTRUDER_GRACE_S: float = Field(default=4.0, validation_alias="INTRUDER_GRACE_S")
+
+    # Wall-clock sweeper over pending candidates (cameras that go quiet,
+    # restarts) and alerts still owed after a failed publish.
+    INTRUDER_SWEEP_INTERVAL_S: float = Field(
+        default=0.5, validation_alias="INTRUDER_SWEEP_INTERVAL_S"
+    )
+
 
 config = IntruderConfig()

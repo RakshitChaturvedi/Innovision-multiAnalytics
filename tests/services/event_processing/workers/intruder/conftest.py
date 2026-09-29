@@ -139,6 +139,16 @@ def make_processor(pg_session_factory, redis_client, sleeps):
     return _make
 
 
+async def settle(proc, after_s=None):
+    """One sweeper pass as if the grace period (wall clock) had passed."""
+    from datetime import datetime as _dt
+
+    from services.event_processing.src.workers.intruder.config import config
+
+    grace = config.INTRUDER_GRACE_S if after_s is None else after_s
+    return await proc.sweep(now=_dt.now(timezone.utc) + timedelta(seconds=grace + 0.5))
+
+
 async def alerts(redis_client):
     """Everything published on alerts:live as parsed dicts."""
     return [

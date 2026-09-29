@@ -6,18 +6,32 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
 _OPEN_COLUMNS = """
-    id, classification_reason, person_id, alert_published, alert_id,
+    id, camera_id, zone_id, track_id, classification_reason, person_id,
+    alert_published, alert_id, awaiting_decision, decide_at,
+    zone_event_id, frame_seq, last_seen_at,
     alert_suppressed, first_detected_at
 """
+
+
+def _uuid_or_none(value) -> str | None:
+    return str(value) if value else None
 
 
 def _open_row(row) -> dict:
     return {
         "id": str(row.id),
+        "camera_id": str(row.camera_id),
+        "zone_id": str(row.zone_id),
+        "track_id": int(row.track_id),
         "classification_reason": row.classification_reason,
-        "person_id": str(row.person_id) if row.person_id else None,
+        "person_id": _uuid_or_none(row.person_id),
         "alert_published": row.alert_published,
-        "alert_id": str(row.alert_id) if row.alert_id else None,
+        "alert_id": _uuid_or_none(row.alert_id),
+        "awaiting_decision": row.awaiting_decision,
+        "decide_at": row.decide_at,
+        "zone_event_id": _uuid_or_none(row.zone_event_id),
+        "frame_seq": row.frame_seq,
+        "last_seen_at": row.last_seen_at,
         "alert_suppressed": row.alert_suppressed,
         "first_detected_at": row.first_detected_at,
     }
@@ -28,13 +42,15 @@ _INSERT_OPEN = text(
     INSERT INTO intruder_events (
         id, zone_id, camera_id, track_id, person_id,
         classification_reason, first_detected_at,
-        last_seen_at, alert_status
+        last_seen_at, alert_status, awaiting_decision, decide_at,
+        candidate_since, zone_event_id, frame_seq
     )
     VALUES (
         CAST(:id AS uuid), CAST(:zone_id AS uuid),
         CAST(:camera_id AS uuid), :track_id,
         CAST(:person_id AS uuid), :reason, :ts, :ts,
-        'pending'
+        'pending', :awaiting, :decide_at, :since,
+        CAST(:zone_event_id AS uuid), :frame_seq
     )
     ON CONFLICT (camera_id, zone_id, track_id)
         WHERE alert_status <> 'resolved'
@@ -120,45 +136,37 @@ class IntruderRepository:
             for r in rows
         ]
 
-    async def enrolled_row_counts_by_track(
+    async def camera_rows_by_track(
         self,
         camera_id: str,
-        person_ids: list[str],
         start: datetime,
         end: datetime,
-    ) -> dict[str, dict[int, int]]:
-        """ENROLLED rows per (person, track) of `person_ids` on this camera
-        within [start, end] (bounded: one camera, one window):
-        {person_id: {track_id: count}}."""
-
-        if not person_ids:
-            return {}
+    ) -> dict[int, list[dict]]:
+        """Every recognition row of one camera in [start, end] (bounded: one
+        camera, a few seconds), grouped by track, oldest first."""
 
         async with self._session_factory() as session:
             result = await session.execute(
                 text(
                     """
-                    SELECT person_id, track_id, count(*) AS n
+                    SELECT track_id, person_id, identity_tag, timestamp
                     FROM recognition_events
                     WHERE camera_id = CAST(:camera_id AS uuid)
-                      AND identity_tag = 'enrolled'
-                      AND person_id = ANY(CAST(:ids AS uuid[]))
                       AND timestamp >= :start
                       AND timestamp <= :end
-                    GROUP BY person_id, track_id
+                    ORDER BY timestamp
                     """
                 ),
-                {
-                    "camera_id": camera_id,
-                    "ids": person_ids,
-                    "start": start,
-                    "end": end,
-                },
+                {"camera_id": camera_id, "start": start, "end": end},
             )
-            counts: dict[str, dict[int, int]] = {}
+            by_track: dict[int, list[dict]] = {}
             for r in result.fetchall():
-                counts.setdefault(str(r.person_id), {})[int(r.track_id)] = int(r.n)
-            return counts
+                by_track.setdefault(int(r.track_id), []).append({
+                    "person_id": _uuid_or_none(r.person_id),
+                    "identity_tag": str(getattr(r.identity_tag, "value", r.identity_tag)),
+                    "timestamp": r.timestamp,
+                })
+            return by_track
 
     async def blocklisted_person_ids(
         self, person_ids: list[str], at: datetime
@@ -222,6 +230,10 @@ class IntruderRepository:
         person_id: str | None,
         reason: str,
         timestamp: datetime,
+        zone_event_id: UUID | None = None,
+        frame_seq: int | None = None,
+        decide_at: datetime | None = None,
+        candidate_since: datetime | None = None,
     ) -> dict | None:
         """
         Idempotent create. Returns the open row (new or pre-existing), so
@@ -230,6 +242,9 @@ class IntruderRepository:
         Returns None when `event_id` already exists but is resolved: that
         zone event was fully handled earlier (a late redelivery), so there
         is nothing left to alert.
+
+        With `decide_at` set the row is a CANDIDATE (awaiting_decision):
+        no alert until finalize_candidate claims it.
         """
 
         params = {
@@ -240,6 +255,11 @@ class IntruderRepository:
             "person_id": person_id,
             "reason": reason,
             "ts": timestamp,
+            "awaiting": decide_at is not None,
+            "decide_at": decide_at,
+            "since": candidate_since,
+            "zone_event_id": str(zone_event_id) if zone_event_id else None,
+            "frame_seq": frame_seq,
         }
 
         try:
@@ -391,3 +411,78 @@ class IntruderRepository:
             ).fetchone()
 
         return row is not None
+
+    async def finalize_candidate(
+        self, event_id: str, reason: str, person_id: str | None
+    ) -> dict | None:
+        """Atomically claim a candidate for alerting. Only one caller (stream
+        or sweeper) gets the row; the others get None."""
+
+        async with self._session_factory() as session, session.begin():
+            row = (
+                await session.execute(
+                    text(
+                        f"""
+                        UPDATE intruder_events
+                        SET awaiting_decision = false,
+                            classification_reason = :reason,
+                            person_id = CAST(:person_id AS uuid)
+                        WHERE id = CAST(:id AS uuid)
+                          AND awaiting_decision
+                          AND alert_status <> 'resolved'
+                        RETURNING {_OPEN_COLUMNS}
+                        """
+                    ),
+                    {"id": event_id, "reason": reason, "person_id": person_id},
+                )
+            ).fetchone()
+        return _open_row(row) if row else None
+
+    async def clear_candidate(self, event_id: str, timestamp: datetime) -> bool:
+        """An authorized winner appeared during the grace period: close the
+        candidate without an alert. False if someone else already decided."""
+
+        async with self._session_factory() as session, session.begin():
+            row = (
+                await session.execute(
+                    text(
+                        """
+                        UPDATE intruder_events
+                        SET awaiting_decision = false,
+                            alert_status = 'resolved',
+                            classification_reason = 'cleared_in_grace',
+                            resolved_at = :ts,
+                            last_seen_at = GREATEST(last_seen_at, :ts)
+                        WHERE id = CAST(:id AS uuid)
+                          AND awaiting_decision
+                          AND alert_status <> 'resolved'
+                        RETURNING id
+                        """
+                    ),
+                    {"id": event_id, "ts": timestamp},
+                )
+            ).fetchone()
+        return row is not None
+
+    async def owed_rows(self, cutoff: datetime, limit: int = 100) -> list[dict]:
+        """Open rows the sweeper must act on: candidates whose grace period
+        has passed on the wall clock (candidate_since <= cutoff), and alerts
+        still unpublished after a failed publish."""
+
+        async with self._session_factory() as session:
+            result = await session.execute(
+                text(
+                    f"""
+                    SELECT {_OPEN_COLUMNS}
+                    FROM intruder_events
+                    WHERE alert_status <> 'resolved'
+                      AND (awaiting_decision
+                           OR NOT (alert_published OR alert_suppressed))
+                      AND candidate_since <= :cutoff
+                    ORDER BY candidate_since
+                    LIMIT :limit
+                    """
+                ),
+                {"cutoff": cutoff, "limit": limit},
+            )
+            return [_open_row(r) for r in result.fetchall()]
