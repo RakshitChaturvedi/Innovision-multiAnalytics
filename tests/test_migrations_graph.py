@@ -83,3 +83,8 @@ def test_single_head_every_revision_leads_to_it(script):
     assert {r.revision for r in script.walk_revisions(base="base", head=head)} == everything
     leaves = {r for r in everything if not script.get_revision(r).nextrev}
     assert leaves == {head}
+
+
+def test_0010_blur_recalibration_sits_on_top_of_0009(script):
+    rev = script.get_revision("0010_blur_recalibration")
+    assert rev.down_revision == "0009_intruder_candidate"

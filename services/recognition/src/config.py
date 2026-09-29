@@ -51,7 +51,11 @@ class RecognitionConfig(ServiceSettings):
 
     # Quality gate defaults (per-camera overrides come from camera_config table)
     DEFAULT_MIN_FACE_SIZE_PX: int = 40
-    DEFAULT_BLUR_THRESHOLD: float = 100.0
+    # Blur score scale: Laplacian variance of the crop resized to
+    # BLUR_EVAL_SIZE px (quality_gate.blur_score). Independent of the source
+    # resolution; see docs/DEMO_TUNING.md and tools/calibrate_blur.py.
+    DEFAULT_BLUR_THRESHOLD: float = 15.0
+    BLUR_EVAL_SIZE: int = 112
     DEFAULT_POSE_YAW_MAX: float = 45.0
     DEFAULT_POSE_PITCH_MAX: float = 30.0
     DEFAULT_DETECTOR_CONFIDENCE_MIN: float = 0.7
@@ -78,6 +82,10 @@ class RecognitionConfig(ServiceSettings):
     # detection worker, so it is aged out instead of retained forever.
     STALE_TRACK_TTL_SECONDS: float = 120.0
     STALE_TRACK_SWEEP_INTERVAL_SECONDS: float = 30.0
+
+    # A camera with face tracks due for recognition but no row written for
+    # this long (event time) logs one recognition_starved WARNING per outage.
+    RECOGNITION_STARVED_AFTER_S: float = 120.0
 
 
 config = RecognitionConfig()

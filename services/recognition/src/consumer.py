@@ -45,6 +45,7 @@ from .face_selection import HeadRegionConfig, select_face
 from .model_loader import RecognitionModelLoader
 from .quality_gate import QualityGate
 from .sampling import RecognitionSampler
+from .starvation import StarvationMonitor
 from .supervised import supervise
 
 logger = logging.getLogger(__name__)
@@ -61,6 +62,18 @@ def _clamp01(value: float) -> float:
     if not math.isfinite(value):
         return 0.0
     return max(0.0, min(1.0, value))
+
+
+# Every way a due face track can end without a recognition row. The existing
+# face_* counters (face_selection reasons) are counted through the same path.
+_TRACK_REJECTIONS = (
+    "crop_none",
+    "precheck_too_small",
+    "precheck_too_blurry",
+    "quality_pose",
+    "quality_detector_confidence",
+    "quality_other",
+)
 
 
 def _decode_jpeg(frame_bytes: bytes):
@@ -96,9 +109,43 @@ class RecognitionConsumer(BaseStreamConsumer):
         self._minio: StorageClient | None = None
         self._sweeper_task: asyncio.Task | None = None
         self._counters.update({"frame_expired": 0, "bad_payload": 0, "frame_decode_failed": 0})
+        self._counters.update({name: 0 for name in _TRACK_REJECTIONS})
+        self._counters["rows_written"] = 0
+        self._per_camera: dict[str, dict[str, int]] = {}
+        # (camera, reason) pairs already logged at INFO; later ones go to DEBUG.
+        self._logged_reasons: set[tuple[str, str]] = set()
+        self._starvation = StarvationMonitor(config.RECOGNITION_STARVED_AFTER_S)
 
-    def _count(self, name: str) -> None:
+    def _count(self, name: str, camera_id: str | None = None) -> None:
         self._counters[name] = self._counters.get(name, 0) + 1
+        if camera_id is not None:
+            cam = self._per_camera.setdefault(camera_id, {})
+            cam[name] = cam.get(name, 0) + 1
+
+    def stats(self) -> dict:
+        """Base counters plus per-camera counts (also in the periodic INFO line)."""
+        return {
+            **super().stats(),
+            "per_camera": {cam: dict(counts) for cam, counts in self._per_camera.items()},
+        }
+
+    def _reject(self, camera_id: str, track_id: int, reason: str, detail: str | None) -> None:
+        """Count one track that ended without a recognition row, and say why.
+
+        The first time a camera hits a reason it is logged at INFO (a gate
+        rejecting every face must be visible without DEBUG logging); repeats
+        go to DEBUG so a busy camera does not flood the log.
+        """
+        self._count(reason, camera_id)
+        self._starvation.rejected(camera_id, reason)
+        first = (camera_id, reason) not in self._logged_reasons
+        self._logged_reasons.add((camera_id, reason))
+        logger.log(
+            logging.INFO if first else logging.DEBUG,
+            "recognition_rejected camera=%s track=%d reason=%s detail=%s%s",
+            camera_id, track_id, reason, detail,
+            " (first for this camera; repeats at DEBUG, totals in stats)" if first else "",
+        )
 
     async def start(self) -> None:
         # Blocking model load — run once, before accepting any messages.
@@ -113,6 +160,7 @@ class RecognitionConsumer(BaseStreamConsumer):
         self._pubsub_redis = aioredis.from_url(settings.redis_url(), health_check_interval=30)
         await self._cache.initialize(self._pubsub_redis)
         await self._cam_config.initialize(self._pubsub_redis)
+        await self._cam_config.warn_legacy_blur_thresholds()
 
         self._sweeper_task = asyncio.create_task(
             supervise("stale_track_sweeper", self._stale_track_sweeper, stopping=self._shutdown),
@@ -193,6 +241,8 @@ class RecognitionConsumer(BaseStreamConsumer):
         if not due:
             self._count("frames_not_due")
             return
+        for _ in due:
+            self._starvation.track_due(camera_id, detection_event.timestamp)
 
         # Tracks finished for THIS message (per call: cameras run concurrently).
         done: set[int] = set()
@@ -213,6 +263,7 @@ class RecognitionConsumer(BaseStreamConsumer):
             )
             for track in due:
                 self._sampler.evict(camera_id, track.track_id)
+                self._starvation.rejected(camera_id, "frame_expired")
             return
         except PermanentError:
             raise
@@ -272,6 +323,7 @@ class RecognitionConsumer(BaseStreamConsumer):
 
         crop_result = self._cropper.crop(frame, track.face_bbox)
         if crop_result is None:
+            self._reject(camera_id, track.track_id, "crop_none", None)
             return
 
         # Cheap, model-free checks first — no point spending an inference
@@ -280,11 +332,12 @@ class RecognitionConsumer(BaseStreamConsumer):
             face_crop=crop_result.image,
             min_face_size_px=cam_cfg.get("min_face_size_px", config.DEFAULT_MIN_FACE_SIZE_PX),
             blur_threshold=cam_cfg.get("blur_threshold", config.DEFAULT_BLUR_THRESHOLD),
+            blur_eval_size=config.BLUR_EVAL_SIZE,
         )
         if not precheck.passes:
-            logger.debug(
-                "quality_precheck_rejected track=%d reason=%s",
-                track.track_id, precheck.rejection_reason,
+            self._reject(
+                camera_id, track.track_id,
+                f"precheck_{precheck.reason_code}", precheck.rejection_reason,
             )
             return
 
@@ -306,10 +359,8 @@ class RecognitionConsumer(BaseStreamConsumer):
             centers, track, detection_event.tracks, frame_w, frame_h, self._head_cfg,
         )
         if selection.index is None:
-            self._count(f"face_{selection.reason}")
-            logger.debug(
-                "face_not_selected camera=%s track=%d faces=%d reason=%s",
-                camera_id, track.track_id, len(faces), selection.reason,
+            self._reject(
+                camera_id, track.track_id, f"face_{selection.reason}", f"faces={len(faces)}",
             )
             return
         face = faces[selection.index]
@@ -323,14 +374,15 @@ class RecognitionConsumer(BaseStreamConsumer):
             detector_confidence_min=config.DEFAULT_DETECTOR_CONFIDENCE_MIN,
         )
         if not quality_result.passes:
-            logger.debug(
-                "quality_gate_rejected track=%d reason=%s",
-                track.track_id, quality_result.rejection_reason,
+            self._reject(
+                camera_id, track.track_id,
+                f"quality_{quality_result.reason_code or 'other'}", quality_result.rejection_reason,
             )
             return
 
         embedding = extract_from_face(face)
         if embedding is None:
+            self._reject(camera_id, track.track_id, "quality_other", "no_embedding")
             return
 
         # face.bbox from InsightFace is in the CROP's own pixel space
@@ -424,7 +476,8 @@ class RecognitionConsumer(BaseStreamConsumer):
                     "refined_face_bbox": refined_face_bbox_json,
                 })
 
-                if inserted.rowcount == 0:
+                inserted_new = inserted.rowcount != 0
+                if not inserted_new:
                     # Redelivery: the whole transaction already committed once.
                     logger.info(
                         "recognition_already_persisted event=%s track=%d",
@@ -474,6 +527,11 @@ class RecognitionConsumer(BaseStreamConsumer):
                     )
             # Committed here: embedding, event, last_seen_at and audit row land
             # together or not at all.
+        camera_id = str(detection_event.camera_id)
+        if inserted_new:  # a redelivery hitting ON CONFLICT wrote nothing new
+            self._count("rows_written", camera_id)
+        # Either way the row exists: this camera is not starved.
+        self._starvation.row_written(camera_id)
 
         recognition_event = RecognitionEvent(
             event_id=uuid.UUID(recognition_id),
