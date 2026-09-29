@@ -16,7 +16,16 @@ from shared.errors import PermanentError
 from shared.frames import FrameUnavailable
 from shared.schemas.events import RecognitionEvent
 
-from .conftest import FakeDB, FakeFace, detection_event, jpeg, unit
+from .conftest import (
+    FakeDB,
+    FakeFace,
+    FrameFaceLoader,
+    detection_event,
+    face_at,
+    jpeg,
+    person_track,
+    unit,
+)
 
 STREAM = "events:detections"
 
@@ -26,7 +35,11 @@ class FakeLoader:
         self.face = face
         self.calls = 0
 
-    def detect_best_face(self, crop):
+    def detect_faces(self, crop):
+        self.calls += 1
+        return [self.face]
+
+    def detect_best_face(self, crop):  # pre-fix API
         self.calls += 1
         return self.face
 
@@ -226,6 +239,52 @@ async def test_track_failure_is_not_swallowed_and_track_is_resampled(rc):
     rc._db.fail_on = None
     await rc.process(msg_id, fields, STREAM)
     assert len(rc._db.tables("recognition_events")) == 1
+
+
+# ------------------------------------------------------- 4. identity swap
+
+
+async def test_neighbours_face_in_crop_is_not_recorded_as_this_track(rc):
+    """A's crop (top of A's box, full width) holds B's face; A looks away.
+    Before the fix the highest det_score face (B's) was recorded on A."""
+    w, h = 640, 480
+    b_person = set_match(rc, unit(0))
+    a = person_track(1, 0.20, 0.20, 0.55, 0.95)
+    b = person_track(2, 0.45, 0.10, 0.80, 0.90)
+    b_face = face_at(0.53, 0.20, w, h, unit(0), det_score=0.99)
+    FrameFaceLoader([b_face]).attach(rc)
+    ev = detection_event(frame_seq=3, tracks=[a, b])
+    ev["frame_shape"] = [h, w]
+    await rc.redis.set(ev["frame_reference"], jpeg(w, h))
+
+    msg_id, fields = await deliver(rc, ev)
+    await rc._handle(STREAM, msg_id, fields)
+
+    rows = {r["track_id"]: r for r in rc._db.tables("recognition_events")}
+    assert 1 not in rows  # nothing recorded for A: no guess
+    assert rows[2]["person_id"] == b_person  # B still recognized from its own crop
+    assert rc.stats()["face_no_face_in_head_region"] == 1
+    assert await pending(rc) == 0
+
+
+async def test_side_by_side_each_track_gets_its_own_identity(rc):
+    w, h = 640, 480
+    b_person = set_match(rc, unit(0))
+    a = person_track(1, 0.30, 0.10, 0.60, 0.90)
+    b = person_track(2, 0.45, 0.10, 0.75, 0.90)
+    a_face = face_at(0.43, 0.15, w, h, unit(1), det_score=0.80)  # unknown person
+    b_face = face_at(0.53, 0.15, w, h, unit(0), det_score=0.99)  # in both heads, nearer B
+    FrameFaceLoader([a_face, b_face]).attach(rc)
+    ev = detection_event(frame_seq=3, tracks=[a, b])
+    ev["frame_shape"] = [h, w]
+    await rc.redis.set(ev["frame_reference"], jpeg(w, h))
+
+    msg_id, fields = await deliver(rc, ev)
+    await rc._handle(STREAM, msg_id, fields)
+
+    rows = {r["track_id"]: r for r in rc._db.tables("recognition_events")}
+    assert rows[1]["identity_tag"] == "unknown" and rows[1]["person_id"] is None
+    assert rows[2]["identity_tag"] == "enrolled" and rows[2]["person_id"] == b_person
 
 
 # ---------------------------------------------------------------- 10. stop()

@@ -63,23 +63,20 @@ class RecognitionModelLoader:
             )
         return self._app
 
-    def detect_best_face(self, face_crop) -> Face | None:
+    def detect_faces(self, face_crop) -> list[Face]:
         """
-        Runs the full SCRFD + ArcFace pipeline ONCE on a face crop and
-        returns the highest-confidence Face — bbox, 5-point landmarks,
-        pose, det_score, AND the 512-d embedding are all attached to the
-        object InsightFace hands back from a single app.get() call.
+        Runs the full SCRFD + ArcFace pipeline ONCE on a crop and returns
+        EVERY face found — bbox (crop pixels), 5-point landmarks, pose,
+        det_score AND the 512-d embedding come from that single app.get()
+        call, so quality evaluation and embedding extraction never re-run
+        the model.
 
-        Quality evaluation and embedding extraction both read off this one
-        Face object instead of re-invoking the model — avoids running
-        detection + recognition twice per crop.
+        The crop can contain more than one person's face; the caller decides
+        which face belongs to the track (face_selection.py). Never pick by
+        det_score here: that is how a neighbour's face ended up recorded as
+        this track's identity.
 
-        This call is blocking (CPU or GPU bound). Callers should invoke it
-        via asyncio.to_thread (or an executor) so it doesn't stall the
-        event loop — see consumer.py.
+        Blocking (CPU or GPU bound): call via asyncio.to_thread.
         """
         app = self.get_model()
-        faces = app.get(face_crop)
-        if not faces:
-            return None
-        return max(faces, key=lambda f: f.det_score)
+        return list(app.get(face_crop) or [])

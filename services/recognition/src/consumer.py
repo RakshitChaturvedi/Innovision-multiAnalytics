@@ -41,6 +41,7 @@ from .config import config
 from .embedding_cache import EmbeddingCache
 from .embedding_extractor import extract_from_face
 from .face_crop import FaceCropper
+from .face_selection import HeadRegionConfig, select_face
 from .model_loader import RecognitionModelLoader
 from .quality_gate import QualityGate
 from .sampling import RecognitionSampler
@@ -76,6 +77,12 @@ class RecognitionConsumer(BaseStreamConsumer):
         self._model_loader = RecognitionModelLoader()
         self._cache = EmbeddingCache()
         self._cropper = FaceCropper()
+        self._head_cfg = HeadRegionConfig(
+            width_frac=config.HEAD_WIDTH_FRAC,
+            top_margin_frac=config.HEAD_TOP_MARGIN_FRAC,
+            height_frac=config.HEAD_HEIGHT_FRAC,
+            ambiguity_ratio=config.FACE_AMBIGUITY_RATIO,
+        )
         self._quality_gate = QualityGate()
         self._sampler = RecognitionSampler(
             sample_rate=config.DEFAULT_SAMPLE_RATE,
@@ -250,10 +257,28 @@ class RecognitionConsumer(BaseStreamConsumer):
         # Single model call for this crop — detection, alignment, and the
         # 512-d embedding all come from this one Face object. Blocking
         # (CPU/GPU-bound), so it runs off the event loop.
-        face = await asyncio.to_thread(self._model_loader.detect_best_face, crop_result.image)
-        if face is None:
-            logger.debug("no_face_detected_by_model track=%d", track.track_id)
+        faces = await asyncio.to_thread(self._model_loader.detect_faces, crop_result.image)
+        frame_h, frame_w = frame.shape[:2]
+        # Crop-local face boxes -> frame-pixel centers, then assign faces to
+        # tracks: the crop may hold a neighbour's face (identity swap).
+        centers = [
+            (
+                crop_result.x1 + (float(f.bbox[0]) + float(f.bbox[2])) / 2,
+                crop_result.y1 + (float(f.bbox[1]) + float(f.bbox[3])) / 2,
+            )
+            for f in faces
+        ]
+        selection = select_face(
+            centers, track, detection_event.tracks, frame_w, frame_h, self._head_cfg,
+        )
+        if selection.index is None:
+            self._count(f"face_{selection.reason}")
+            logger.debug(
+                "face_not_selected camera=%s track=%d faces=%d reason=%s",
+                camera_id, track.track_id, len(faces), selection.reason,
+            )
             return
+        face = faces[selection.index]
 
         quality_result = self._quality_gate.evaluate_face(
             face=face,
@@ -281,7 +306,6 @@ class RecognitionConsumer(BaseStreamConsumer):
         # coordinates, which are then normalized to 0-1 for storage —
         # same convention as every other bbox in this pipeline
         # (track.face_bbox, detection_events.face_bbox, etc).
-        frame_h, frame_w = frame.shape[:2]
         fx1, fy1, fx2, fy2 = face.bbox
         refined_face_bbox = {
             "x1": max(0.0, min((crop_result.x1 + float(fx1)) / frame_w, 1.0)),

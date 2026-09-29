@@ -49,6 +49,16 @@ class RecognitionConfig:
     DEFAULT_POSE_PITCH_MAX: float = float(os.environ.get("DEFAULT_POSE_PITCH_MAX", "30.0"))
     DEFAULT_DETECTOR_CONFIDENCE_MIN: float = float(os.environ.get("DEFAULT_DETECTOR_CONFIDENCE_MIN", "0.7"))
 
+    # Face -> track assignment (face_selection.py). Head region of a person
+    # box: central HEAD_WIDTH_FRAC of its width, from HEAD_TOP_MARGIN_FRAC of
+    # its height above the top down to HEAD_HEIGHT_FRAC below it.
+    HEAD_WIDTH_FRAC: float = float(os.environ.get("RECOGNITION_HEAD_WIDTH_FRAC", "0.7"))
+    HEAD_TOP_MARGIN_FRAC: float = float(os.environ.get("RECOGNITION_HEAD_TOP_MARGIN_FRAC", "0.05"))
+    HEAD_HEIGHT_FRAC: float = float(os.environ.get("RECOGNITION_HEAD_HEIGHT_FRAC", "0.30"))
+    # Two faces competing for one track are ambiguous (nothing recorded)
+    # when the farther one is within this ratio of the nearer one.
+    FACE_AMBIGUITY_RATIO: float = float(os.environ.get("RECOGNITION_FACE_AMBIGUITY_RATIO", "1.25"))
+
     # Sampling
     DEFAULT_SAMPLE_RATE: int = int(os.environ.get("DEFAULT_SAMPLE_RATE", "10"))
     QUALITY_IMPROVEMENT_THRESHOLD: float = float(os.environ.get("QUALITY_IMPROVEMENT_THRESHOLD", "0.2"))
