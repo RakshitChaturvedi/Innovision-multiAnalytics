@@ -8,7 +8,7 @@ from sqlalchemy.dialects.postgresql import UUID
 revision = "0004_intruder"
 
 down_revision = (
-    "0003_recognition",
+    "0003",
     "0003_zone_monitor",
 )
 

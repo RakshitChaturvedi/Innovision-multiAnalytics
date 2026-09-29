@@ -66,6 +66,10 @@ config.set_main_option("sqlalchemy.url", _sync_url(raw_url).replace("%", "%%"))
 
 target_metadata = None
 
+# Separate from the platform's alembic_version: this repo owns its own
+# database (innovision_analytics) and must never share a version table.
+VERSION_TABLE = "alembic_version_analytics"
+
 # ---------------------------------------------------------------------------
 # Migration runners
 # ---------------------------------------------------------------------------
@@ -82,6 +86,7 @@ def run_migrations_offline() -> None:
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
+        version_table=VERSION_TABLE,
     )
     with context.begin_transaction():
         context.run_migrations()
@@ -102,6 +107,7 @@ def run_migrations_online() -> None:
         context.configure(
             connection=connection,
             target_metadata=target_metadata,
+            version_table=VERSION_TABLE,
         )
         with context.begin_transaction():
             context.run_migrations()

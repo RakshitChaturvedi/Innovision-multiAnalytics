@@ -53,7 +53,7 @@ async def test_log_defaults_metadata_to_empty_dict(mock_session):
 
     params = mock_session.execute.call_args.args[1]
 
-    assert params["metadata"] == {}
+    assert params["metadata"] == "{}"  # JSON text, CAST to jsonb in SQL
 
 
 @pytest.mark.asyncio
@@ -75,7 +75,8 @@ async def test_log_preserves_metadata(mock_session):
 
     params = mock_session.execute.call_args.args[1]
 
-    assert params["metadata"] == metadata
+    import json
+    assert json.loads(params["metadata"]) == metadata
 
 
 @pytest.mark.asyncio

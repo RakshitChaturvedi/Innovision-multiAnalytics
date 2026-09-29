@@ -2,7 +2,8 @@ import asyncio
 import logging
 import sys
 
-from src.consumer import RecognitionConsumer
+from services.recognition.src.consumer import RecognitionConsumer
+from shared.runner import run_consumers
 
 logging.basicConfig(
     level=logging.INFO,
@@ -10,17 +11,9 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stdout)],
 )
 
-logger = logging.getLogger("recognition_main")
-
 
 async def main() -> None:
-    logger.info("recognition_service_starting")
-    consumer = RecognitionConsumer()
-    try:
-        await consumer.start()
-    except KeyboardInterrupt:
-        logger.info("recognition_service_stopping")
-        await consumer.stop()
+    await run_consumers("recognition", [RecognitionConsumer()])
 
 
 if __name__ == "__main__":

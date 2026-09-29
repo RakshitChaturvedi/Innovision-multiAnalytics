@@ -28,12 +28,9 @@ COPY services/detection/requirements.txt ./requirements.txt
 RUN pip install --upgrade pip \
     && pip install -r requirements.txt
 
-# Application code
-COPY services/detection/src ./src
-COPY services/detection/main.py ./main.py
-
-# Shared library — required, previously missing
+# Application code + shared library, laid out as importable packages
 COPY shared ./shared
+COPY services/detection ./services/detection
 
 RUN mkdir -p /models/detection \
     && useradd --create-home --uid 10001 appuser \
@@ -44,4 +41,4 @@ USER appuser
 ENV PYTHONPATH=/app \
     YOLO_CONFIG_DIR=/tmp/ultralytics
 
-CMD ["python", "main.py"]
+CMD ["python", "-m", "services.detection.main"]

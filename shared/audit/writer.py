@@ -1,3 +1,4 @@
+import json
 import logging
 
 from datetime import datetime, timezone
@@ -30,7 +31,7 @@ class AuditWriter:
                  operator_id, metadata, timestamp)
                 VALUES
                  (:service, :action, :entity_type, :entity_id,
-                 :operator_id, :metadata, :timestamp)
+                 :operator_id, CAST(:metadata AS jsonb), :timestamp)
             """),
             {
                 "service": service,
@@ -38,7 +39,7 @@ class AuditWriter:
                 "entity_type": entity_type,
                 "entity_id": entity_id,
                 "operator_id": str(operator_id) if operator_id else None,
-                "metadata": metadata or {},
+                "metadata": json.dumps(metadata or {}, default=str),
                 "timestamp": datetime.now(timezone.utc),
             }
         )

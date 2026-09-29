@@ -8,3 +8,5 @@ sqlalchemy[asyncio]==2.0.25
 asyncpg==0.29.0
 structlog==24.1.0
 pydantic==2.6.1
+pydantic-settings==2.2.1
+pgvector==0.3.6

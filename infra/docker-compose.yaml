@@ -116,8 +116,8 @@ services:
 
   detection:
     build:
-      context: ../services/detection
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: services/detection/Dockerfile
     container_name: innovision-detection
     restart: unless-stopped
     env_file: ../.env
@@ -131,8 +131,8 @@ services:
 
   recognition:
     build:
-      context: ../services/recognition
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: services/recognition/Dockerfile
     container_name: innovision-recognition
     restart: unless-stopped
     env_file: ../.env

@@ -35,9 +35,7 @@ class BaseStreamConsumer(ABC):
             3. run loop
         """
         from shared.config import settings
-        self.redis = await aioredis.from_url(
-            f"redis://{settings.REDIS_HOST}:{settings.REDIS_PORT}"
-        )
+        self.redis = await aioredis.from_url(settings.redis_url())
         await self._ensure_consumer_group()
 
         self._running = True

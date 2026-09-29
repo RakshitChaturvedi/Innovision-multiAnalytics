@@ -13,8 +13,8 @@ import logging
 import signal
 import sys
 
-from src.config import settings
-from src.consumer import DetectionConsumer
+from services.detection.src.config import settings
+from services.detection.src.consumer import DetectionConsumer
 
 logging.basicConfig(
     level=getattr(logging, settings.log_level.upper(), logging.INFO),

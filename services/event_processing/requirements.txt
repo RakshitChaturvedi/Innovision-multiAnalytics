@@ -1,5 +1,7 @@
-redis
-SQLAlchemy
-asyncpg
-pydantic
-pydantic-settings
+redis==5.2.1
+SQLAlchemy==2.0.36
+asyncpg==0.30.0
+pydantic==2.10.6
+pydantic-settings==2.7.1
+# shared/frames.py (used by the alert publisher) imports minio.error
+minio==7.2.15
