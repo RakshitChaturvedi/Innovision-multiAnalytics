@@ -7,10 +7,15 @@ recognition together in a single pass, so the embedding is already
 sitting on the Face object by the time quality_gate has finished
 evaluating it — this just normalizes what's already there.
 """
+from __future__ import annotations
+
 import logging
+from typing import TYPE_CHECKING
 
 import numpy as np
-from insightface.app.common import Face
+
+if TYPE_CHECKING:
+    from insightface.app.common import Face
 
 logger = logging.getLogger(__name__)
 

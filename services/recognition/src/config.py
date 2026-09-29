@@ -1,5 +1,7 @@
 import os
 
+from shared.config import settings
+
 
 class RecognitionConfig:
     # Redis
@@ -7,7 +9,7 @@ class RecognitionConfig:
     REDIS_PORT: int = int(os.environ.get("REDIS_PORT", "6379"))
 
     # PostgreSQL
-    DATABASE_URL: str = os.environ.get("DATABASE_URL", "")
+    DATABASE_URL: str = os.environ.get("DATABASE_URL") or settings.DATABASE_URL
 
     # MinIO
     MINIO_ENDPOINT: str = os.environ.get("MINIO_ENDPOINT", "minio:9000")

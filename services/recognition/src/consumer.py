@@ -17,16 +17,20 @@ model_loader.py for the single-pack loading logic.
 import asyncio
 import json
 import logging
+import math
 import uuid
-from datetime import datetime, timezone
 
 import cv2
 import numpy as np
 import redis.asyncio as aioredis
+from pydantic import ValidationError
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from shared.audit.writer import AuditWriter
+from shared.config import settings
+from shared.errors import PermanentError
+from shared.frames import FrameUnavailable, fetch_frame
 from shared.schemas.consumer import BaseStreamConsumer
 from shared.schemas.enums import IdentityTag
 from shared.schemas.events import DetectionEvent, RecognitionEvent
@@ -40,15 +44,26 @@ from .face_crop import FaceCropper
 from .model_loader import RecognitionModelLoader
 from .quality_gate import QualityGate
 from .sampling import RecognitionSampler
+from .supervised import supervise
 
 logger = logging.getLogger(__name__)
 
-# shared/storage/storage_minio_client.py exports the StorageClient class
-# only, no module-level singleton, so it's instantiated once here.
-# StorageClient.buckets is a dict keyed by name; this still points at the
-# snapshots bucket (the recognition frame-source fix is a separate task).
-_storage = StorageClient()
-SNAPSHOTS_BUCKET = "snapshots"
+# Deterministic ids: a redelivered DetectionEvent must land on the same rows
+# (ON CONFLICT DO NOTHING) and re-publish the same RecognitionEvent id.
+_ID_NAMESPACE = uuid.UUID("6f1c1f0e-5d1b-4c57-9a55-3f7f7f2d6a10")
+
+
+def _clamp01(value: float) -> float:
+    """Cosine similarity / quality can fall outside [0, 1]; the DB CHECK and
+    the RecognitionEvent model only accept [0, 1]."""
+    value = float(value)
+    if not math.isfinite(value):
+        return 0.0
+    return max(0.0, min(1.0, value))
+
+
+def _decode_jpeg(frame_bytes: bytes):
+    return cv2.imdecode(np.frombuffer(frame_bytes, dtype=np.uint8), cv2.IMREAD_COLOR)
 
 
 class RecognitionConsumer(BaseStreamConsumer):
@@ -70,19 +85,32 @@ class RecognitionConsumer(BaseStreamConsumer):
         self._cam_config = CameraConfigStore()
         self._engine = create_async_engine(config.DATABASE_URL)
         self._session_factory = async_sessionmaker(self._engine, expire_on_commit=False)
-        self._publisher: aioredis.Redis | None = None
+        self._pubsub_redis: aioredis.Redis | None = None
+        self._minio: StorageClient | None = None
         self._sweeper_task: asyncio.Task | None = None
+        self._counters.update({"frame_unavailable": 0, "bad_payload": 0, "frame_decode_failed": 0})
+
+    def _count(self, name: str) -> None:
+        self._counters[name] = self._counters.get(name, 0) + 1
 
     async def start(self) -> None:
         # Blocking model load — run once, before accepting any messages.
         self._model_loader.preload()
 
-        redis_client = await aioredis.from_url(f"redis://{config.REDIS_HOST}:{config.REDIS_PORT}")
-        await self._cache.initialize(redis_client)
-        await self._cam_config.initialize(redis_client)
-        self._publisher = redis_client
+        # Cold-copy frame source. Credentials are read lazily by StorageClient;
+        # without MINIO_* set, fetch_frame simply has no cold fallback.
+        self._minio = StorageClient()
 
-        self._sweeper_task = asyncio.create_task(self._stale_track_sweeper())
+        # Dedicated connection for the pub/sub listeners; the consumer's own
+        # self.redis (created in super().start()) serves frames and XADD.
+        self._pubsub_redis = aioredis.from_url(settings.redis_url(), health_check_interval=30)
+        await self._cache.initialize(self._pubsub_redis)
+        await self._cam_config.initialize(self._pubsub_redis)
+
+        self._sweeper_task = asyncio.create_task(
+            supervise("stale_track_sweeper", self._stale_track_sweeper),
+            name="recognition-stale-sweeper",
+        )
 
         logger.info(
             "recognition_consumer_ready pack=%s enrolled=%d",
@@ -91,24 +119,48 @@ class RecognitionConsumer(BaseStreamConsumer):
         await super().start()
 
     async def stop(self) -> None:
-        if self._sweeper_task is not None:
-            self._sweeper_task.cancel()
-            try:
-                await self._sweeper_task
-            except asyncio.CancelledError:
-                pass
-        await super().stop()
-        await self._engine.dispose()
+        """Safe to call at any point of start(), and more than once."""
+        task, self._sweeper_task = self._sweeper_task, None
+        if task is not None:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
 
-    async def process(self, msg_id: str, data: dict, stream: str) -> None:
+        try:
+            await super().stop()  # drains in-flight work while engines are still usable
+        finally:
+            for name, closer in (
+                ("embedding_cache", self._cache.close),
+                ("camera_config", self._cam_config.close),
+                ("consumer_engine", self._engine.dispose),
+                ("pubsub_redis", self._close_pubsub_redis),
+            ):
+                try:
+                    await closer()
+                except Exception:
+                    logger.exception("recognition_stop_cleanup_failed component=%s", name)
+
+    async def _close_pubsub_redis(self) -> None:
+        client, self._pubsub_redis = self._pubsub_redis, None
+        if client is not None:
+            await client.aclose()
+
+    def _parse_event(self, msg_id: str, data: dict) -> DetectionEvent:
         raw = data.get(b"data") or data.get("data")
         if raw is None:
-            logger.error("detection_event_missing_data msg_id=%s", msg_id)
-            return
+            self._count("bad_payload")
+            logger.warning("detection_event_missing_data msg_id=%s", msg_id)
+            raise PermanentError(f"message {msg_id} has no 'data' field")
         if isinstance(raw, bytes):
-            raw = raw.decode()
+            raw = raw.decode("utf-8", "replace")
+        try:
+            return DetectionEvent.model_validate_json(raw)
+        except ValidationError as exc:
+            self._count("bad_payload")
+            logger.warning("detection_event_invalid msg_id=%s error=%s", msg_id, exc)
+            raise PermanentError(f"invalid DetectionEvent in {msg_id}: {exc}") from exc
 
-        detection_event = DetectionEvent.model_validate_json(raw)
+    async def process(self, msg_id: str, data: dict, stream: str) -> None:
+        detection_event = self._parse_event(msg_id, data)
 
         face_tracks = [
             t for t in detection_event.tracks if t.has_face and t.face_bbox is not None
@@ -119,33 +171,52 @@ class RecognitionConsumer(BaseStreamConsumer):
         cam_cfg = await self._cam_config.get(str(detection_event.camera_id))
 
         try:
-            frame_bytes = await self._fetch_frame(detection_event.frame_reference)
-        except Exception as exc:
-            logger.error(
-                "frame_fetch_failed ref=%s error=%s",
-                detection_event.frame_reference, exc,
+            frame_bytes = await fetch_frame(
+                self.redis,
+                self._minio,
+                camera_id=detection_event.camera_id,
+                frame_seq=detection_event.frame_seq,
+                frame_reference=detection_event.frame_reference,
+                frame_provider=detection_event.frame_provider,
             )
-            raise  # do not ack — Redis will redeliver
+        except FrameUnavailable:
+            # Permanent: the base consumer dead-letters and acks. No retry loop.
+            self._count("frame_unavailable")
+            logger.warning(
+                "frame_unavailable camera=%s seq=%s ref=%s",
+                detection_event.camera_id, detection_event.frame_seq,
+                detection_event.frame_reference,
+            )
+            raise
 
-        frame_array = np.frombuffer(frame_bytes, dtype=np.uint8)
-        frame = cv2.imdecode(frame_array, cv2.IMREAD_COLOR)
+        frame = await asyncio.to_thread(_decode_jpeg, frame_bytes)
         if frame is None:
-            logger.error("frame_decode_failed ref=%s", detection_event.frame_reference)
-            return  # ack — a corrupt frame won't improve on retry
+            self._count("frame_decode_failed")
+            logger.warning("frame_decode_failed ref=%s", detection_event.frame_reference)
+            raise PermanentError(f"frame not decodable: {detection_event.frame_reference}")
 
+        failures: list[Exception] = []
         for track in face_tracks:
             try:
                 await self._process_track(
                     detection_event=detection_event, track=track, frame=frame, cam_cfg=cam_cfg,
                 )
-            except Exception:
-                # One bad track must not block the other tracks in this
-                # frame, and must not force the whole DetectionEvent (and
-                # every track in it) to be redelivered forever.
+            except PermanentError:
+                raise
+            except Exception as exc:
+                # One bad track must not block the other tracks of this frame,
+                # but the failure must not be swallowed either: forget the
+                # track's sampler state (so the retry is not skipped by
+                # sampling) and re-raise after the loop so the message stays
+                # pending and is redelivered. Persistence is idempotent.
                 logger.exception(
                     "track_processing_failed camera=%s track=%d",
                     detection_event.camera_id, track.track_id,
                 )
+                self._sampler.evict(str(detection_event.camera_id), track.track_id)
+                failures.append(exc)
+        if failures:
+            raise failures[0]
 
     async def _process_track(self, detection_event: DetectionEvent, track, frame, cam_cfg: dict) -> None:
         camera_id = str(detection_event.camera_id)
@@ -223,6 +294,7 @@ class RecognitionConsumer(BaseStreamConsumer):
         matched_person, similarity_score = self._cache.search(
             query_embedding=embedding, threshold=similarity_threshold,
         )
+        similarity_score = _clamp01(similarity_score)
 
         if matched_person is None:
             identity_tag, person_id = IdentityTag.UNKNOWN, None
@@ -241,7 +313,7 @@ class RecognitionConsumer(BaseStreamConsumer):
             detection_event=detection_event,
             track_id=track.track_id,
             embedding=embedding,
-            quality_score=quality_result.quality_score,
+            quality_score=_clamp01(quality_result.quality_score),
             identity_tag=identity_tag,
             person_id=person_id,
             similarity_score=similarity_score,
@@ -259,26 +331,24 @@ class RecognitionConsumer(BaseStreamConsumer):
         similarity_score: float,
         refined_face_bbox: dict,
     ) -> None:
-        embedding_id = str(uuid.uuid4())
-        recognition_id = str(uuid.uuid4())
-        now = datetime.now(timezone.utc)
+        # Deterministic ids: a redelivery hits ON CONFLICT and publishes the
+        # very same RecognitionEvent again.
+        embedding_id = str(uuid.uuid5(_ID_NAMESPACE, f"embedding:{detection_event.event_id}:{track_id}"))
+        recognition_id = str(uuid.uuid5(_ID_NAMESPACE, f"recognition:{detection_event.event_id}:{track_id}"))
+        # Business time is the event time, never the wall clock.
+        now = detection_event.timestamp
+        similarity_score = _clamp01(similarity_score)
+        quality_score = _clamp01(quality_score)
 
-        # pgvector's text input format is "[v1,v2,...]" — a bare Python
-        # list bound as a param does not reliably cast to a `vector`
-        # column over asyncpg, so it's serialized explicitly and cast
-        # in the query.
+        # pgvector's text input format is "[v1,v2,...]"; serialized explicitly
+        # and cast in the query (asyncpg has no codec for it here).
         embedding_literal = "[" + ",".join(f"{v:.8f}" for v in embedding.tolist()) + "]"
-
-        # Same reasoning as the vector cast above — asyncpg does not
-        # reliably adapt a raw Python dict to `jsonb` via a text() query
-        # param, so it's serialized explicitly and cast, matching the
-        # pattern the detection worker already uses for its own JSONB
-        # columns (bounding_box / face_bbox in detection_events).
+        # Same for jsonb: explicit json.dumps + CAST.
         refined_face_bbox_json = json.dumps(refined_face_bbox)
 
         async with self._session_factory() as session:
             async with session.begin():
-                await session.execute(text("""
+                inserted = await session.execute(text("""
                     INSERT INTO face_embeddings (
                         id, person_id, embedding, source_camera_id, quality_score,
                         is_enrollment, refined_face_bbox
@@ -286,6 +356,7 @@ class RecognitionConsumer(BaseStreamConsumer):
                         :id, :person_id, CAST(:embedding AS vector), :source_camera_id, :quality_score,
                         false, CAST(:refined_face_bbox AS jsonb)
                     )
+                    ON CONFLICT (id) DO NOTHING
                 """), {
                     "id": embedding_id,
                     "person_id": person_id,
@@ -295,49 +366,56 @@ class RecognitionConsumer(BaseStreamConsumer):
                     "refined_face_bbox": refined_face_bbox_json,
                 })
 
-                await session.execute(text("""
-                    INSERT INTO recognition_events (
-                        id, camera_id, detection_event_id, track_id,
-                        person_id, similarity_score, identity_tag,
-                        embedding_id, quality_score, liveness_checked, timestamp
-                    ) VALUES (
-                        :id, :camera_id, :detection_event_id, :track_id,
-                        :person_id, :similarity_score, :identity_tag,
-                        :embedding_id, :quality_score, false, :timestamp
+                if inserted.rowcount == 0:
+                    # Redelivery: the whole transaction already committed once.
+                    logger.info(
+                        "recognition_already_persisted event=%s track=%d",
+                        detection_event.event_id, track_id,
                     )
-                """), {
-                    "id": recognition_id,
-                    "camera_id": str(detection_event.camera_id),
-                    "detection_event_id": str(detection_event.event_id),
-                    "track_id": track_id,
-                    "person_id": person_id,
-                    "similarity_score": similarity_score,
-                    "identity_tag": identity_tag.value,
-                    "embedding_id": embedding_id,
-                    "quality_score": quality_score,
-                    "timestamp": now,
-                })
-
-                if person_id:
+                else:
                     await session.execute(text("""
-                        UPDATE enrolled_persons SET last_seen_at = :now WHERE id = :person_id
-                    """), {"now": now, "person_id": person_id})
-
-                audit = AuditWriter(session)
-                await audit.log(
-                    service="recognition",
-                    action="embedding_written",
-                    entity_type="face_embedding",
-                    entity_id=embedding_id,
-                    metadata={
-                        "person_id": person_id,
-                        "identity_tag": identity_tag.value,
-                        "similarity_score": similarity_score,
+                        INSERT INTO recognition_events (
+                            id, camera_id, detection_event_id, track_id,
+                            person_id, similarity_score, identity_tag,
+                            embedding_id, quality_score, liveness_checked, timestamp
+                        ) VALUES (
+                            :id, :camera_id, :detection_event_id, :track_id,
+                            :person_id, :similarity_score, :identity_tag,
+                            :embedding_id, :quality_score, false, :timestamp
+                        )
+                        ON CONFLICT (id) DO NOTHING
+                    """), {
+                        "id": recognition_id,
                         "camera_id": str(detection_event.camera_id),
-                    },
-                )
-            # transaction committed here — embedding, event, last_seen_at,
-            # and audit log all land atomically or not at all
+                        "detection_event_id": str(detection_event.event_id),
+                        "track_id": track_id,
+                        "person_id": person_id,
+                        "similarity_score": similarity_score,
+                        "identity_tag": identity_tag.value,
+                        "embedding_id": embedding_id,
+                        "quality_score": quality_score,
+                        "timestamp": now,
+                    })
+
+                    if person_id:
+                        await session.execute(text("""
+                            UPDATE enrolled_persons SET last_seen_at = :now WHERE id = :person_id
+                        """), {"now": now, "person_id": person_id})
+
+                    await AuditWriter(session).log(
+                        service="recognition",
+                        action="embedding_written",
+                        entity_type="face_embedding",
+                        entity_id=embedding_id,
+                        metadata={
+                            "person_id": person_id,
+                            "identity_tag": identity_tag.value,
+                            "similarity_score": similarity_score,
+                            "camera_id": str(detection_event.camera_id),
+                        },
+                    )
+            # Committed here: embedding, event, last_seen_at and audit row land
+            # together or not at all.
 
         recognition_event = RecognitionEvent(
             event_id=uuid.UUID(recognition_id),
@@ -356,40 +434,21 @@ class RecognitionConsumer(BaseStreamConsumer):
             liveness_checked=False,
         )
 
-        await self._publisher.xadd(
+        await self.redis.xadd(
             config.RECOGNITIONS_STREAM,
             {"data": recognition_event.model_dump_json()},
             maxlen=config.RECOGNITIONS_MAXLEN,
             approximate=True,
         )
 
-    async def _fetch_frame(self, frame_reference: str) -> bytes:
-        """
-        DetectionEvent carries no frame_provider field (only FrameEvent
-        does, upstream of detection, and it's not forwarded) — so there's
-        currently no way for this service to know whether a frame lives
-        in the Redis cache or MinIO. Falling back to MinIO only, since
-        that's the durable store. If frames are meant to be readable from
-        the Redis frame cache within recognition's processing window,
-        frame_provider needs to be added back onto DetectionEvent and
-        forwarded by the detection worker's publisher — same shape of fix
-        as the CameraProfile field, just not a deliberate removal this
-        time.
-        """
-        return _storage.download(SNAPSHOTS_BUCKET, frame_reference)
-
     async def _stale_track_sweeper(self) -> None:
         """
         No 'track ended' signal exists from the detection worker, so
         per-track sampler state is aged out on a timer instead of being
-        retained forever.
+        retained forever. Runs under supervise(): a failing sweep is logged
+        and the loop restarted, never silent.
         """
         interval = config.STALE_TRACK_SWEEP_INTERVAL_SECONDS
         while True:
-            try:
-                await asyncio.sleep(interval)
-                self._sampler.sweep_stale()
-            except asyncio.CancelledError:
-                break
-            except Exception:
-                logger.exception("stale_track_sweep_failed")
+            await asyncio.sleep(interval)
+            self._sampler.sweep_stale()
