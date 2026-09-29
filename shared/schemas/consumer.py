@@ -17,6 +17,7 @@ import asyncio
 import json
 import logging
 import random
+import time
 from abc import ABC, abstractmethod
 from typing import Any, Awaitable, Callable, Optional, cast
 
@@ -77,6 +78,8 @@ class BaseStreamConsumer(ABC):
         self._key_locks: dict[str, asyncio.Lock] = {}
         self._key_refs: dict[str, int] = {}
         self._bg_tasks: list[asyncio.Task] = []
+        # monotonic time of the last XACK (None until the first one); /health
+        self.last_processed_monotonic: Optional[float] = None
         self._counters = {
             "processed": 0,
             "failed": 0,
@@ -200,6 +203,7 @@ class BaseStreamConsumer(ABC):
         assert self.redis is not None
         await self._r.xack(stream, self.group_name, msg_id)
         self._counters["processed"] += 1
+        self.last_processed_monotonic = time.monotonic()
 
     @property
     def _r(self) -> aioredis.Redis:
