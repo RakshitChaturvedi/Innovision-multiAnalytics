@@ -1,5 +1,8 @@
 """Pure unit tests (no I/O): quality gate pose order, sampler restart, vector parsing."""
+import logging
+
 import numpy as np
+import pytest
 
 from services.recognition.src.embedding_cache import parse_vector
 from services.recognition.src.quality_gate import QualityGate
@@ -52,3 +55,57 @@ def test_parse_vector_variants():
     assert parse_vector([1, 2]).dtype == np.float32
     assert parse_vector(np.array([1.0, 2.0])).dtype == np.float32
     assert parse_vector(None) is None and parse_vector("[]") is None
+
+
+# ------------------------------------------------------- model pack path
+
+
+class _FakeFaceAnalysis:
+    created: list = []
+
+    def __init__(self, name, root, providers):
+        _FakeFaceAnalysis.created.append((name, root))
+
+    def prepare(self, ctx_id, det_size):
+        pass
+
+
+def _loader(monkeypatch, root, pack="buffalo_s"):
+    from services.recognition.src import model_loader
+
+    monkeypatch.setattr(model_loader.config, "MODEL_ROOT", str(root))
+    monkeypatch.setattr(model_loader.config, "RECOGNITION_MODEL_PACK", pack)
+    monkeypatch.setattr(model_loader, "FaceAnalysis", _FakeFaceAnalysis)
+    _FakeFaceAnalysis.created = []
+    return model_loader
+
+
+def test_missing_pack_folder_fails_startup_with_the_real_path(tmp_path, monkeypatch, caplog):
+    """Before: logged MODEL_ROOT/<pack> (not where InsightFace looks) and let
+    FaceAnalysis try to download the pack."""
+    model_loader = _loader(monkeypatch, tmp_path)
+    (tmp_path / "buffalo_s").mkdir()  # the WRONG place (old log path)
+    with pytest.raises(model_loader.ModelPackMissing) as exc:
+        model_loader.RecognitionModelLoader().preload()
+    expected = str(tmp_path / "models" / "buffalo_s")
+    assert expected in str(exc.value)
+    assert _FakeFaceAnalysis.created == []  # never reached InsightFace
+    assert any(expected in r.message and r.levelname == "ERROR" for r in caplog.records)
+
+
+def test_pack_folder_without_onnx_fails(tmp_path, monkeypatch):
+    model_loader = _loader(monkeypatch, tmp_path)
+    (tmp_path / "models" / "buffalo_s").mkdir(parents=True)
+    with pytest.raises(model_loader.ModelPackMissing, match="no .onnx"):
+        model_loader.RecognitionModelLoader().preload()
+
+
+def test_existing_pack_loads_and_logs_the_real_path(tmp_path, monkeypatch, caplog):
+    model_loader = _loader(monkeypatch, tmp_path)
+    pack = tmp_path / "models" / "buffalo_s"
+    pack.mkdir(parents=True)
+    (pack / "det_500m.onnx").write_bytes(b"")
+    with caplog.at_level(logging.INFO):
+        model_loader.RecognitionModelLoader().preload()
+    assert _FakeFaceAnalysis.created == [("buffalo_s", str(tmp_path))]
+    assert any(f"path={pack}" in r.message for r in caplog.records)
