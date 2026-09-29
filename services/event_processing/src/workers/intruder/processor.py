@@ -37,6 +37,10 @@ class IntruderProcessor:
       1. INSERT ... ON CONFLICT DO NOTHING, else load the open row
       2. if alert_published is false: publish (deterministic alert_id)
       3. mark alert_published = true
+    With INTRUDER_ALERT_COOLDOWN_S > 0, step 2 is skipped for a row first
+    detected within the cooldown of another published alert on the same
+    camera+zone: the row is marked alert_suppressed and never published
+    (also not by a retry).
     A failure at any step raises; the redelivered message resumes at the
     first step that did not complete. A crash between 2 and 3 republishes the
     same alert_id, which the platform dedupes.
@@ -47,8 +51,12 @@ class IntruderProcessor:
         repo: IntruderRepository,
         publisher,
         sleep=asyncio.sleep,
+        cooldown_s: float | None = None,
     ):
         self._repo = repo
+        self._cooldown_s = (
+            config.ALERT_COOLDOWN_S if cooldown_s is None else cooldown_s
+        )
         self._publisher = publisher
         self._sleep = sleep
         self.metrics: Counter = Counter()
@@ -215,6 +223,9 @@ class IntruderProcessor:
         row: dict,
         similarity: float | None = None,
     ) -> None:
+        if await self._suppressed_by_cooldown(ev, row):
+            return
+
         reason = row["classification_reason"]
         intruder_event_id = uuid.UUID(row["id"])
 
@@ -246,6 +257,29 @@ class IntruderProcessor:
         await self._publisher.publish(alert)
         await self._repo.mark_published(row["id"], alert.alert_id)
         self.metrics["alerts_published"] += 1
+
+    async def _suppressed_by_cooldown(self, ev: ZoneEvent, row: dict) -> bool:
+        """Window is anchored on the row's first_detected_at (event time), so
+        a redelivery or a later DWELL reaches the same decision."""
+        if row["alert_suppressed"]:
+            self.metrics["alerts_suppressed_cooldown_redelivered"] += 1
+            return True
+        if self._cooldown_s <= 0:
+            return False
+        first = row["first_detected_at"]
+        if not await self._repo.published_alert_within(
+            str(ev.camera_id), str(ev.zone_id), row["id"],
+            since=first - timedelta(seconds=self._cooldown_s), until=first,
+        ):
+            return False
+        await self._repo.mark_suppressed(row["id"])
+        self.metrics["alerts_suppressed_cooldown"] += 1
+        logger.warning(
+            "intruder_alert_suppressed_cooldown camera=%s zone=%s track=%s "
+            "intruder_event=%s cooldown_s=%s",
+            ev.camera_id, ev.zone_id, ev.track_id, row["id"], self._cooldown_s,
+        )
+        return True
 
     @staticmethod
     def _build_alert_content(

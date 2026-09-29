@@ -3,6 +3,7 @@ import logging
 import sys
 
 from services.recognition.src.consumer import RecognitionConsumer
+from shared.health import health_port
 from shared.runner import run_consumers
 
 logging.basicConfig(
@@ -13,7 +14,9 @@ logging.basicConfig(
 
 
 async def main() -> None:
-    await run_consumers("recognition", [RecognitionConsumer()])
+    await run_consumers(
+        "recognition", [RecognitionConsumer()], health_port=health_port(8082)
+    )
 
 
 if __name__ == "__main__":

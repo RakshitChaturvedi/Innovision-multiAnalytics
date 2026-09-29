@@ -92,8 +92,8 @@ def insert_camera(engine, blur=None) -> str:
 # ----------------------------------------------------------------- migration
 
 
-def test_0008_moves_only_untouched_defaults_and_changes_server_default(db_url):
-    alembic("upgrade", "0007_headcount_breach_state")
+def test_0009_moves_only_untouched_defaults_and_changes_server_default(db_url):
+    alembic("upgrade", "0008_intruder_alert_cooldown")
     engine = sync(db_url)
     legacy_default = insert_camera(engine)  # server default 100.0
     legacy_explicit = insert_camera(engine, 100.0)
@@ -108,7 +108,7 @@ def test_0008_moves_only_untouched_defaults_and_changes_server_default(db_url):
     new_cam = insert_camera(engine)
     assert thresholds(engine)[new_cam] == 15.0  # new server default
 
-    alembic("downgrade", "0007_headcount_breach_state")
+    alembic("downgrade", "0008_intruder_alert_cooldown")
     assert thresholds(engine)[tuned] == 42.0
     assert thresholds(engine)[legacy_default] == 15.0  # rows are not rewritten back
     new_cam = insert_camera(engine)

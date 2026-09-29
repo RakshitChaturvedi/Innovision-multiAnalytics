@@ -8,11 +8,25 @@ non-zero instead of silently leaving the service half alive.
 import asyncio
 import logging
 import signal
+from collections.abc import Awaitable, Callable
+
+from shared.supervisor import supervise
 
 logger = logging.getLogger(__name__)
 
 
-async def run_consumers(name: str, consumers: list) -> None:
+async def run_consumers(
+    name: str,
+    consumers: list,
+    *,
+    health_port: int | None = None,
+    background: dict[str, Callable[[], Awaitable[None]]] | None = None,
+    redis_url: str | None = None,
+    database_url: str | None = None,
+) -> None:
+    """`health_port`: serve GET /health (shared/health.py) there.
+    `background`: extra long-running jobs (e.g. retention), each run under
+    shared/supervisor.supervise so a crash is logged and restarted."""
     loop = asyncio.get_running_loop()
     stop_event = asyncio.Event()
 
@@ -32,6 +46,24 @@ async def run_consumers(name: str, consumers: list) -> None:
         for i, c in enumerate(consumers)
     ]
     waiter = asyncio.create_task(stop_event.wait(), name=f"{name}-shutdown")
+    jobs = [
+        asyncio.create_task(supervise(job, factory, stopping=stop_event), name=f"{name}-{job}")
+        for job, factory in (background or {}).items()
+    ]
+    close_health = None
+    if health_port is not None:
+        from shared.health import start_health_server
+
+        try:
+            _, close_health = await start_health_server(
+                name, consumers, runners, health_port,
+                redis_url=redis_url, database_url=database_url,
+            )
+        except BaseException:
+            for t in (*runners, waiter, *jobs):
+                t.cancel()
+            await asyncio.gather(*runners, waiter, *jobs, return_exceptions=True)
+            raise
 
     crash: BaseException | None = None
     try:
@@ -44,6 +76,15 @@ async def run_consumers(name: str, consumers: list) -> None:
     finally:
         logger.info("%s_service_stopping", name)
         waiter.cancel()
+        stop_event.set()  # supervised jobs: a crash from here on is shutdown
+        for j in jobs:
+            j.cancel()
+        await asyncio.gather(*jobs, return_exceptions=True)
+        if close_health is not None:
+            try:
+                await close_health()
+            except Exception:
+                logger.warning("%s_health_close_failed", name, exc_info=True)
 
         # Graceful first: stop() lets each consumer finish in-flight work.
         # Cancelling start() first would tear that work down mid-message.

@@ -6,7 +6,8 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
 _OPEN_COLUMNS = """
-    id, classification_reason, person_id, alert_published, alert_id
+    id, classification_reason, person_id, alert_published, alert_id,
+    alert_suppressed, first_detected_at
 """
 
 
@@ -17,6 +18,8 @@ def _open_row(row) -> dict:
         "person_id": str(row.person_id) if row.person_id else None,
         "alert_published": row.alert_published,
         "alert_id": str(row.alert_id) if row.alert_id else None,
+        "alert_suppressed": row.alert_suppressed,
+        "first_detected_at": row.first_detected_at,
     }
 
 
@@ -306,6 +309,51 @@ class IntruderRepository:
                     "WHERE id = CAST(:id AS uuid)"
                 ),
                 {"id": event_id, "alert_id": str(alert_id)},
+            )
+
+    async def published_alert_within(
+        self,
+        camera_id: str,
+        zone_id: str,
+        exclude_id: str,
+        since: datetime,
+        until: datetime,
+    ) -> bool:
+        """True if another event for camera+zone first detected in
+        [since, until] (event time) already had its alert published."""
+        async with self._session_factory() as session:
+            row = (
+                await session.execute(
+                    text(
+                        """
+                        SELECT 1 FROM intruder_events
+                        WHERE camera_id = CAST(:camera_id AS uuid)
+                          AND zone_id = CAST(:zone_id AS uuid)
+                          AND alert_published
+                          AND id <> CAST(:id AS uuid)
+                          AND first_detected_at BETWEEN :since AND :until
+                        LIMIT 1
+                        """
+                    ),
+                    {
+                        "camera_id": camera_id,
+                        "zone_id": zone_id,
+                        "id": exclude_id,
+                        "since": since,
+                        "until": until,
+                    },
+                )
+            ).fetchone()
+        return row is not None
+
+    async def mark_suppressed(self, event_id: str) -> None:
+        async with self._session_factory() as session, session.begin():
+            await session.execute(
+                text(
+                    "UPDATE intruder_events SET alert_suppressed = true "
+                    "WHERE id = CAST(:id AS uuid) AND NOT alert_published"
+                ),
+                {"id": event_id},
             )
 
     async def resolve_open(
