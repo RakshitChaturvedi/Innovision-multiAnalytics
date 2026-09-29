@@ -63,6 +63,18 @@ class RecognitionSampler:
         state = self._states[key]
         state.last_seen_monotonic = now
 
+        if frame_seq < state.last_sampled_frame_seq:
+            # Sequence went backwards: the camera/feeder restarted (or a track
+            # id was reused). The old state is meaningless, so start over
+            # instead of waiting for frame_seq to climb past the old value.
+            logger.warning(
+                "sampling_sequence_restarted camera=%s track=%d frame_seq=%d last=%d",
+                camera_id, track_id, frame_seq, state.last_sampled_frame_seq,
+            )
+            state.last_sampled_frame_seq = frame_seq
+            state.last_quality_score = quality_score
+            return True
+
         if frame_seq - state.last_sampled_frame_seq >= self.sample_rate:
             state.last_sampled_frame_seq = frame_seq
             state.last_quality_score = quality_score

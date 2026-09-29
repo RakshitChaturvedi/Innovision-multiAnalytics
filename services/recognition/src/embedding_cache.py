@@ -8,6 +8,7 @@ the hot path.
 """
 import asyncio
 import logging
+from typing import Any
 
 import numpy as np
 import redis.asyncio as aioredis
@@ -15,8 +16,39 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from .config import config
+from .supervised import supervise
 
 logger = logging.getLogger(__name__)
+
+
+def parse_vector(value: Any) -> np.ndarray | None:
+    """Turn what asyncpg hands back for a pgvector value into float32.
+
+    Without pgvector's codec the value arrives as text ('[0.1,0.2,...]'); with
+    it, as an ndarray/list. All are accepted so the cache does not depend on
+    connection-level codec registration.
+    """
+    if value is None:
+        return None
+    if isinstance(value, (bytes, bytearray)):
+        value = value.decode()
+    if isinstance(value, str):
+        body = value.strip().strip("[]")
+        if not body:
+            return None
+        return np.array(body.split(","), dtype=np.float32)
+    return np.asarray(value, dtype=np.float32)
+
+
+def _mean_unit(raw_embeddings) -> np.ndarray | None:
+    vecs = [v for v in (parse_vector(e) for e in raw_embeddings if e is not None) if v is not None]
+    if not vecs:
+        return None
+    avg = np.mean(vecs, axis=0).astype(np.float32)
+    norm = np.linalg.norm(avg)
+    if norm == 0:
+        return None
+    return (avg / norm).astype(np.float32)
 
 
 class EmbeddingCache:
@@ -34,41 +66,42 @@ class EmbeddingCache:
         self._engine = create_async_engine(config.DATABASE_URL)
         self._session_factory = async_sessionmaker(self._engine, expire_on_commit=False)
         self._redis: aioredis.Redis | None = None
+        self._listener_task: asyncio.Task | None = None
+        self._listener_runs = 0
 
     async def initialize(self, redis_client: aioredis.Redis) -> None:
         self._redis = redis_client
         await self._load_all()
-        asyncio.create_task(self._listen_invalidations())
+        self._listener_task = asyncio.create_task(
+            supervise("embedding_cache_listener", self._listen_invalidations),
+            name="embedding-cache-listener",
+        )
         logger.info("embedding_cache_ready enrolled_count=%d", len(self.enrolled_persons))
+
+    async def close(self) -> None:
+        task, self._listener_task = self._listener_task, None
+        if task is not None:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        await self._engine.dispose()
 
     async def _load_all(self) -> None:
         async with self._session_factory() as session:
             rows = await session.execute(text("""
                 SELECT
                     ep.id AS person_id, ep.name, ep.role, ep.department, ep.clearance_level,
-                    array_agg(fe.embedding ORDER BY fe.created_at) AS embeddings
+                    array_agg(fe.embedding::text ORDER BY fe.created_at) AS embeddings
                 FROM enrolled_persons ep
                 JOIN face_embeddings fe ON fe.person_id = ep.id AND fe.is_enrollment = true
                 GROUP BY ep.id, ep.name, ep.role, ep.department, ep.clearance_level
             """))
             all_rows = rows.fetchall()
 
-        if not all_rows:
-            logger.info("embedding_cache_empty no_enrolled_persons")
-            return
-
         persons, matrix_rows = [], []
         for row in all_rows:
-            embeddings = [np.array(emb, dtype=np.float32) for emb in row.embeddings if emb is not None]
-            if not embeddings:
+            avg = _mean_unit(row.embeddings)
+            if avg is None:
                 continue
-
-            avg = np.mean(embeddings, axis=0).astype(np.float32)
-            norm = np.linalg.norm(avg)
-            if norm == 0:
-                continue
-            avg = avg / norm
-
             persons.append({
                 "person_id": str(row.person_id),
                 "name": row.name,
@@ -78,20 +111,20 @@ class EmbeddingCache:
             })
             matrix_rows.append(avg)
 
-        if not matrix_rows:
-            return
-
-        self.enrolled_matrix = np.stack(matrix_rows)
+        # Replace atomically, also when empty: persons removed while we were
+        # not listening must not linger in the matrix.
+        matrix = np.stack(matrix_rows) if matrix_rows else np.zeros((0, 512), dtype=np.float32)
+        self.enrolled_matrix = matrix
         self.enrolled_persons = persons
         self.person_id_to_idx = {p["person_id"]: i for i, p in enumerate(persons)}
-        logger.info("embedding_cache_loaded count=%d shape=%s", len(persons), self.enrolled_matrix.shape)
+        logger.info("embedding_cache_loaded count=%d shape=%s", len(persons), matrix.shape)
 
     async def reload_person(self, person_id: str) -> None:
         async with self._session_factory() as session:
             row = await session.execute(text("""
                 SELECT
                     ep.id, ep.name, ep.role, ep.department, ep.clearance_level,
-                    array_agg(fe.embedding ORDER BY fe.created_at) AS embeddings
+                    array_agg(fe.embedding::text ORDER BY fe.created_at) AS embeddings
                 FROM enrolled_persons ep
                 JOIN face_embeddings fe ON fe.person_id = ep.id AND fe.is_enrollment = true
                 WHERE ep.id = :person_id
@@ -103,15 +136,10 @@ class EmbeddingCache:
             await self._remove_person(person_id)
             return
 
-        embeddings = [np.array(emb, dtype=np.float32) for emb in result.embeddings if emb is not None]
-        if not embeddings:
+        avg = _mean_unit(result.embeddings)
+        if avg is None:
+            await self._remove_person(person_id)
             return
-
-        avg = np.mean(embeddings, axis=0).astype(np.float32)
-        norm = np.linalg.norm(avg)
-        if norm == 0:
-            return
-        avg = avg / norm
 
         new_person = {
             "person_id": str(result.id),
@@ -143,17 +171,28 @@ class EmbeddingCache:
         logger.info("embedding_cache_removed person_id=%s", person_id)
 
     async def _listen_invalidations(self) -> None:
+        """One subscription session; the supervisor restarts it on any failure."""
         pubsub = self._redis.pubsub()
-        await pubsub.subscribe(config.ENROLL_INVALIDATE_CHANNEL)
-        logger.info("embedding_cache_listening channel=%s", config.ENROLL_INVALIDATE_CHANNEL)
+        try:
+            await pubsub.subscribe(config.ENROLL_INVALIDATE_CHANNEL)
+            logger.info("embedding_cache_listening channel=%s", config.ENROLL_INVALIDATE_CHANNEL)
+            self._listener_runs += 1
+            if self._listener_runs > 1:
+                # Invalidations published while we were disconnected are lost.
+                await self._load_all()
 
-        async for message in pubsub.listen():
-            if message["type"] == "message":
-                person_id = message["data"]
-                if isinstance(person_id, bytes):
-                    person_id = person_id.decode()
-                logger.info("embedding_cache_invalidate person_id=%s", person_id)
-                await self.reload_person(person_id)
+            async for message in pubsub.listen():
+                if message["type"] == "message":
+                    person_id = message["data"]
+                    if isinstance(person_id, bytes):
+                        person_id = person_id.decode()
+                    logger.info("embedding_cache_invalidate person_id=%s", person_id)
+                    await self.reload_person(person_id)
+        finally:
+            try:
+                await pubsub.aclose()
+            except Exception:
+                logger.warning("embedding_cache_pubsub_close_failed", exc_info=True)
 
     def search(self, query_embedding: np.ndarray, threshold: float) -> tuple[dict | None, float]:
         """

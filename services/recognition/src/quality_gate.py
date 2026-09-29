@@ -14,12 +14,17 @@ worth it:
      in the consumer, and its result is reused here and for embedding
      extraction.
 """
+from __future__ import annotations
+
 import logging
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import cv2
 import numpy as np
-from insightface.app.common import Face
+
+if TYPE_CHECKING:  # only for annotations; keeps the gate importable without insightface
+    from insightface.app.common import Face
 
 logger = logging.getLogger(__name__)
 
@@ -92,8 +97,9 @@ class QualityGate:
 
         pose = getattr(face, "pose", None)
         if pose is not None:
-            yaw = abs(float(pose[0]))
-            pitch = abs(float(pose[1]))
+            # InsightFace Face.pose is [pitch, yaw, roll] (degrees).
+            pitch = abs(float(pose[0]))
+            yaw = abs(float(pose[1]))
             if yaw > pose_yaw_max:
                 return QualityResult(
                     passes=False,
