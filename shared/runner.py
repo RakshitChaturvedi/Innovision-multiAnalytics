@@ -7,12 +7,27 @@ non-zero instead of silently leaving the service half alive.
 
 import asyncio
 import logging
+import os
 import signal
 from collections.abc import Awaitable, Callable
 
 from shared.supervisor import supervise
 
 logger = logging.getLogger(__name__)
+
+STOP_FILE_ENV = "INNOVISION_STOP_FILE"
+STOP_FILE_POLL_S = 0.5
+
+
+async def _watch_stop_file(path: str, stop_event: asyncio.Event) -> None:
+    """Graceful stop without signals (Windows, detached processes): the file
+    appearing is a stop request (scripts/down.ps1 creates it)."""
+    while not stop_event.is_set():
+        if os.path.exists(path):
+            logger.info("stop_file_found path=%s", path)
+            stop_event.set()
+            return
+        await asyncio.sleep(STOP_FILE_POLL_S)
 
 
 async def run_consumers(
@@ -40,6 +55,12 @@ async def run_consumers(
         except NotImplementedError:
             pass  # Windows / restricted environments
 
+    stop_file = os.environ.get(STOP_FILE_ENV)
+    watcher = (
+        asyncio.create_task(_watch_stop_file(stop_file, stop_event), name=f"{name}-stop-file")
+        if stop_file else None
+    )
+
     logger.info("%s_service_starting", name)
     runners = [
         asyncio.create_task(c.start(), name=f"{name}-consumer-{i}")
@@ -60,9 +81,10 @@ async def run_consumers(
                 redis_url=redis_url, database_url=database_url,
             )
         except BaseException:
-            for t in (*runners, waiter, *jobs):
+            extra = [watcher] if watcher is not None else []
+            for t in (*runners, waiter, *jobs, *extra):
                 t.cancel()
-            await asyncio.gather(*runners, waiter, *jobs, return_exceptions=True)
+            await asyncio.gather(*runners, waiter, *jobs, *extra, return_exceptions=True)
             raise
 
     crash: BaseException | None = None
@@ -76,6 +98,9 @@ async def run_consumers(
     finally:
         logger.info("%s_service_stopping", name)
         waiter.cancel()
+        if watcher is not None:
+            watcher.cancel()
+            await asyncio.gather(watcher, return_exceptions=True)
         stop_event.set()  # supervised jobs: a crash from here on is shutdown
         for j in jobs:
             j.cancel()
