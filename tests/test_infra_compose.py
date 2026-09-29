@@ -22,3 +22,19 @@ def test_minio_healthcheck_uses_mc_ready_not_curl(compose):
     code = "\n".join(line for line in service.splitlines() if not line.strip().startswith("#"))
     assert "curl" not in code
     assert "image: minio/minio:RELEASE.2025-09-07T16-13-09Z" in service
+
+
+@pytest.mark.parametrize(
+    "service,port",
+    [("detection", 8081), ("recognition", 8082), ("event_processing", 8083)],
+)
+def test_app_services_have_health_endpoint_healthcheck(service, port):
+    text = (ROOT / "infra/docker-compose.yaml").read_text()
+    match = re.search(rf"^  {service}:\n(.*?)(?=^  \S|^\S|\Z)", text, re.M | re.S)
+    assert match, f"no {service} service"
+    hc = re.search(r"^    healthcheck:\n((?:      .*\n|\s*#.*\n)+)", match.group(1), re.M)
+    assert hc, f"{service} has no healthcheck"
+    test_line = next(l for l in hc.group(1).splitlines() if l.strip().startswith("test:"))
+    # python urllib against /health (curl is not in the service images)
+    assert test_line.strip().startswith('test: ["CMD", "python", "-c"')
+    assert f"http://127.0.0.1:{port}/health" in test_line

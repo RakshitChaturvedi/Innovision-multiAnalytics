@@ -101,6 +101,14 @@ services:
         condition: service_healthy
       postgres:
         condition: service_healthy
+    healthcheck:
+      # GET /health (shared/health.py): 503 if Redis/DB unreachable or a consumer died.
+      # python urllib, not curl: curl is not in the service images.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081/health', timeout=5)"]
+      interval: 15s
+      timeout: 8s
+      retries: 3
+      start_period: 60s
     profiles: ["app"]
     gpus: all
 
@@ -116,6 +124,14 @@ services:
         condition: service_healthy
       postgres:
         condition: service_healthy
+    healthcheck:
+      # GET /health (shared/health.py): 503 if Redis/DB unreachable or a consumer died.
+      # python urllib, not curl: curl is not in the service images.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8082/health', timeout=5)"]
+      interval: 15s
+      timeout: 8s
+      retries: 3
+      start_period: 60s
     profiles: ["app"]
     gpus: all
 
@@ -131,6 +147,14 @@ services:
         condition: service_healthy
       postgres:
         condition: service_healthy
+    healthcheck:
+      # GET /health (shared/health.py): 503 if Redis/DB unreachable or a consumer died.
+      # python urllib, not curl: curl is not in the service images.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8083/health', timeout=5)"]
+      interval: 15s
+      timeout: 8s
+      retries: 3
+      start_period: 60s
     profiles: ["app"]
 
 volumes:
