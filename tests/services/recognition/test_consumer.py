@@ -14,6 +14,7 @@ from services.recognition.src import consumer as consumer_mod
 from services.recognition.src.consumer import RecognitionConsumer, _clamp01
 from shared.errors import PermanentError
 from shared.schemas.events import RecognitionEvent
+from tests import redis_target
 
 from .conftest import (
     FakeDB,
@@ -387,7 +388,7 @@ async def test_listener_dying_while_stopping_is_not_an_error(rc, redis, redis_po
         pass
 
     rc._cache._load_all = noop
-    rc._pubsub_redis = aioredis.from_url(f"redis://127.0.0.1:{redis_port}")
+    rc._pubsub_redis = aioredis.from_url(redis_target.url("127.0.0.1", redis_port))
     await rc._cache.initialize(rc._pubsub_redis)
     for _ in range(100):
         if rc._cache._listener_runs:

@@ -94,7 +94,7 @@ class HeadcountConsumer(BaseStreamConsumer):
 
     async def start(self):
         redis_client = await aioredis.from_url(
-            f"redis://{self._cfg.REDIS_HOST}:{self._cfg.REDIS_PORT}"
+            f"redis://{self._cfg.REDIS_HOST}:{self._cfg.REDIS_PORT}/{self._cfg.REDIS_DB}"
         )
         self._cache = redis_client
         self._alerts = AlertPublisher(
@@ -103,7 +103,10 @@ class HeadcountConsumer(BaseStreamConsumer):
             maxlen=self._cfg.ALERTS_MAXLEN,
         )
 
-        self._zone_store = ZoneStore()
+        if self._zone_store is None:
+            # Shares the consumer's stopping event: a listener dying during
+            # stop() is expected, not an ERROR, and is not restarted.
+            self._zone_store = ZoneStore(stopping=self._shutdown)
         await self._zone_store.initialize(redis_client)
         self._repo = HeadcountStore()
 
@@ -113,6 +116,11 @@ class HeadcountConsumer(BaseStreamConsumer):
         await super().start()
 
     async def stop(self):
+        # Order matters: mark stopping and cancel the invalidation listener
+        # BEFORE the Redis connection it reads from is closed.
+        self._shutdown.set()
+        if self._zone_store is not None:
+            await self._zone_store.close()
         for task in self._background:
             task.cancel()
         await asyncio.gather(*self._background, return_exceptions=True)

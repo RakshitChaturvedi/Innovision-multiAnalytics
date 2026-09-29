@@ -3,7 +3,7 @@
     python -m tools.calibrate_blur [--threshold 15] [--eval-size 112] [--image face.jpg ...]
 
 Shows, per case, the crop size, the old raw-crop score (Laplacian variance of
-the crop as-is, used before 0009_blur_recalibration) and the current score
+the crop as-is, used before 0010_blur_recalibration) and the current score
 (services/recognition/src/quality_gate.py::blur_score), and whether the
 current score passes the threshold. --image scores your own face crops too,
 which is the way to tune DEFAULT_BLUR_THRESHOLD for a real camera.

@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 CACHE_TTL_SECONDS = 60.0
 _UNDEFINED_TABLE_SQLSTATE = "42P01"
-# camera_config.blur_threshold default before 0009_blur_recalibration. The blur
+# camera_config.blur_threshold default before 0010_blur_recalibration. The blur
 # score changed scale (quality_gate.blur_score), so this value now rejects
 # every face; the migration rewrites rows still at exactly this value.
 LEGACY_BLUR_THRESHOLD = 100.0
@@ -88,7 +88,7 @@ class CameraConfigStore:
         self._warned_legacy_blur.add(camera_id)
         logger.warning(
             "camera_blur_threshold_legacy camera_id=%s blur_threshold=%.1f: this is the "
-            "pre-0009 default on the old score scale and rejects nearly every face; "
+            "pre-0010 default on the old score scale and rejects nearly every face; "
             "run the migrations or set it (default now %.1f, see docs/DEMO_TUNING.md)",
             camera_id, LEGACY_BLUR_THRESHOLD, config.DEFAULT_BLUR_THRESHOLD,
         )

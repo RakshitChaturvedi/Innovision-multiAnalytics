@@ -1,8 +1,7 @@
 """fetch_frame + AlertPublisher against a REAL local redis-server.
 
-Skipped when the redis-server binary is not installed.
+Skipped locally without the redis-server binary (fails in CI).
 """
-import shutil
 from uuid import uuid4
 
 import pytest
@@ -12,9 +11,8 @@ from shared.frames import FrameUnavailable, fetch_frame
 from shared.platform_contracts.alert_event import AlertEvent
 from shared.platform_contracts.enums import FrameProvider
 
-pytestmark = pytest.mark.skipif(
-    shutil.which("redis-server") is None, reason="redis-server not installed"
-)
+# The `redis` fixture starts a throwaway redis-server (skips without the
+# binary locally, fails under REQUIRE_REAL_SERVICES=1).
 
 
 async def test_real_redis_fetch_verbatim_key(redis):

@@ -17,7 +17,7 @@ from tests.recognition_fakes import FrameFaceLoader, face_at, jpeg, person_track
 from services.recognition.src import consumer as rec_mod  # noqa: E402  (after the insightface stub)
 from services.recognition.src.consumer import RecognitionConsumer  # noqa: E402
 
-from .conftest import CAMERA, T0, alerts, zone_event
+from .conftest import CAMERA, T0, alerts, settle, zone_event
 
 W, H = 640, 480
 FRAMES = 5
@@ -84,6 +84,7 @@ async def enter_zone(make_processor, *track_ids) -> None:
     proc, _ = make_processor()
     for n, track_id in enumerate(track_ids):
         await proc.handle(zone_event(track=track_id, at=FRAMES, seq=100 + n))
+    await settle(proc)
 
 
 async def recognitions(db, track_id):

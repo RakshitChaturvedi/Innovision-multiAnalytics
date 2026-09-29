@@ -12,6 +12,7 @@ from sqlalchemy import make_url
 
 from shared.health import HealthServer, db_check, health_port, redis_check
 from shared.runner import run_consumers
+from tests import redis_target
 
 
 def _pg_url() -> str:
@@ -48,14 +49,14 @@ class FakeConsumer:
 
 @pytest.fixture
 async def checks(redis_port):
-    r_check, r_close = redis_check(f"redis://127.0.0.1:{redis_port}")
+    r_check, r_close = redis_check(redis_target.url("127.0.0.1", redis_port))
     d_check, d_close = db_check(_pg_url())
     try:
         await asyncio.wait_for(d_check(), 5)
     except Exception as exc:
         await r_close()
         await d_close()
-        pytest.skip(f"no Postgres: {exc}")
+        redis_target.unavailable(f"no Postgres: {exc}")
     yield r_check, d_check
     await r_close()
     await d_close()
@@ -93,7 +94,7 @@ async def test_healthy_returns_200_with_stats(checks):
 
 async def test_redis_down_returns_503(checks):
     _, d_check = checks
-    r_check, r_close = redis_check(f"redis://127.0.0.1:{_free_port()}")
+    r_check, r_close = redis_check(redis_target.url("127.0.0.1", _free_port()))
     task = asyncio.create_task(forever())
     srv = await serve([FakeConsumer()], [task], r_check, d_check)
     try:
@@ -197,7 +198,7 @@ async def test_run_consumers_serves_health_and_runs_background_jobs(redis_port, 
     c = RunnerConsumer()
     task = asyncio.create_task(run_consumers(
         "t", [c], health_port=port, background={"job": job},
-        redis_url=f"redis://127.0.0.1:{redis_port}", database_url=_pg_url(),
+        redis_url=redis_target.url("127.0.0.1", redis_port), database_url=_pg_url(),
     ))
     for _ in range(50):
         try:

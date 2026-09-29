@@ -51,7 +51,7 @@ class ZoneMonitorConsumer(BaseStreamConsumer):
             return
 
         redis_client = await aioredis.from_url(
-            f"redis://{config.REDIS_HOST}:{config.REDIS_PORT}"
+            f"redis://{config.REDIS_HOST}:{config.REDIS_PORT}/{config.REDIS_DB}"
         )
         self._redis_client = redis_client
 

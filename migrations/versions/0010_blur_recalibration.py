@@ -10,16 +10,16 @@ and move to the new default; any other value was set on purpose and is kept.
 Downgrade restores the old server default only: rows are not rewritten,
 because it can no longer tell which ones this migration changed.
 
-Revision ID: 0009_blur_recalibration
-Revises: 0008_intruder_alert_cooldown
+Revision ID: 0010_blur_recalibration
+Revises: 0009_intruder_candidate
 """
 
 from alembic import op
 import sqlalchemy as sa
 
 
-revision = "0009_blur_recalibration"
-down_revision = "0008_intruder_alert_cooldown"
+revision = "0010_blur_recalibration"
+down_revision = "0009_intruder_candidate"
 branch_labels = None
 depends_on = None
 

@@ -164,7 +164,7 @@ How to tune:
    `DEFAULT_BLUR_THRESHOLD=12`.
 
 `camera_config.blur_threshold` overrides the environment default.
-Migration `0009_blur_recalibration` moves rows still at exactly 100.0 (the old
+Migration `0010_blur_recalibration` moves rows still at exactly 100.0 (the old
 default) to 15 and leaves other values alone. At startup, recognition logs
 `WARNING camera_blur_threshold_legacy camera_id=...` for every camera still at
 100.0: on the new scale that rejects nearly every face.
