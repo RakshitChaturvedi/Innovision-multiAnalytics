@@ -42,9 +42,42 @@ def test_decide_no_rows_restricted_and_monitored():
     assert decide([], "monitored", [], set())[0] is None
 
 
-def test_decide_authorized_row_anywhere_wins():
+def test_decide_single_authorized_row_among_others_does_not_authorize():
+    """Old rule: ANY authorized row authorized the track (one swapped match
+    was enough). Now it needs a strict majority; otherwise fail closed."""
     rows = [row("unknown", sim=0.99), row("enrolled", "p1", 0.5)]
-    assert decide(rows, "restricted", ["p1"], set())[0] is None
+    c, chosen = decide(rows, "restricted", ["p1"], set())
+    assert c.reason == "unidentified_in_restricted" and chosen is None
+
+
+def test_decide_authorized_strict_majority_authorizes():
+    rows = [row("enrolled", "p1", 0.8)] * 5 + [row("visitor", "p1", 0.62)]
+    c, chosen = decide(rows, "restricted", ["p1"], set())
+    assert c is None and chosen["person_id"] == "p1"
+
+
+def test_decide_exactly_half_is_not_a_majority():
+    rows = [row("enrolled", "p1", 0.8)] * 2 + [row("unknown", sim=0.3)] * 2
+    assert decide(rows, "restricted", ["p1"], set())[0].reason == "unidentified_in_restricted"
+
+
+def test_decide_majority_must_be_one_person():
+    rows = [row("enrolled", "p1"), row("enrolled", "p2"), row("unknown", sim=0.2)]
+    c, _ = decide(rows, "restricted", ["p1", "p2"], set())
+    assert c.reason == "unidentified_in_restricted"
+
+
+def test_decide_cross_track_conflict_fails_closed():
+    rows = [row("enrolled", "p1", 0.9)] * 3
+    c, chosen = decide(rows, "restricted", ["p1"], set(), conflicted_person_ids={"p1"})
+    assert c.reason == "unidentified_in_restricted" and chosen is None
+
+
+def test_decide_conflict_does_not_hide_blocklist_and_ignores_monitored():
+    rows = [row("enrolled", "p1", 0.9)]
+    c, _ = decide(rows, "restricted", ["p1"], {"p1"}, conflicted_person_ids={"p1"})
+    assert c.reason == "blocklisted"
+    assert decide(rows, "monitored", [], set(), conflicted_person_ids={"p1"})[0] is None
 
 
 def test_decide_uses_highest_similarity_otherwise():

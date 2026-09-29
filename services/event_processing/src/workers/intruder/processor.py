@@ -97,8 +97,10 @@ class IntruderProcessor:
             [r["person_id"] for r in rows if r["person_id"]], ev.timestamp
         )
 
+        conflicted = await self._conflicting_identities(ev, zone, rows)
+
         classification, chosen = decide(
-            rows, zone["type"], authorized, blocklisted
+            rows, zone["type"], authorized, blocklisted, conflicted
         )
 
         if classification is None:
@@ -132,6 +134,41 @@ class IntruderProcessor:
             "intruder_detected camera=%s zone=%s track=%s reason=%s",
             camera_id, zone_id, ev.track_id, classification.reason,
         )
+
+    async def _conflicting_identities(
+        self, ev: ZoneEvent, zone: dict, rows: list[dict]
+    ) -> set[str]:
+        """
+        Enrolled persons of this track that are ALSO matched on another
+        track of the same camera in the same window. One person cannot be
+        two tracks at once, so at least one of those matches is wrong; in a
+        restricted zone both tracks are then treated as unverified.
+        """
+
+        if zone["type"] != "restricted":
+            return set()
+
+        person_ids = sorted({
+            r["person_id"] for r in rows
+            if r["identity_tag"] == "enrolled" and r["person_id"]
+        })
+        if not person_ids:
+            return set()
+
+        conflicted = await self._repo.persons_on_other_tracks(
+            str(ev.camera_id),
+            ev.track_id,
+            person_ids,
+            ev.timestamp - timedelta(seconds=config.RECOGNITION_MAX_AGE_S),
+            ev.timestamp + timedelta(seconds=config.RECOGNITION_FUTURE_S),
+        )
+        if conflicted:
+            self.metrics["identity_conflict"] += 1
+            logger.warning(
+                "intruder_identity_conflict camera=%s track=%s zone=%s persons=%s",
+                ev.camera_id, ev.track_id, ev.zone_id, sorted(conflicted),
+            )
+        return conflicted
 
     async def _lookup_recognitions(self, ev: ZoneEvent, zone: dict) -> list[dict]:
         """

@@ -117,6 +117,44 @@ class IntruderRepository:
             for r in rows
         ]
 
+    async def persons_on_other_tracks(
+        self,
+        camera_id: str,
+        track_id: int,
+        person_ids: list[str],
+        start: datetime,
+        end: datetime,
+    ) -> set[str]:
+        """Which of `person_ids` are ENROLLED matches on a DIFFERENT track of
+        the same camera within [start, end] (bounded: one camera, one window)."""
+
+        if not person_ids:
+            return set()
+
+        async with self._session_factory() as session:
+            result = await session.execute(
+                text(
+                    """
+                    SELECT DISTINCT person_id
+                    FROM recognition_events
+                    WHERE camera_id = CAST(:camera_id AS uuid)
+                      AND track_id <> :track_id
+                      AND identity_tag = 'enrolled'
+                      AND person_id = ANY(CAST(:ids AS uuid[]))
+                      AND timestamp >= :start
+                      AND timestamp <= :end
+                    """
+                ),
+                {
+                    "camera_id": camera_id,
+                    "track_id": track_id,
+                    "ids": person_ids,
+                    "start": start,
+                    "end": end,
+                },
+            )
+            return {str(r.person_id) for r in result.fetchall()}
+
     async def blocklisted_person_ids(
         self, person_ids: list[str], at: datetime
     ) -> set[str]:
