@@ -74,7 +74,12 @@ def test_0007_sits_on_top_of_0006_reliability(script):
     assert rev.down_revision == "0006_reliability"
 
 
-def test_0008_cooldown_is_the_single_head_on_top_of_0007(script):
-    rev = script.get_revision("0008_intruder_alert_cooldown")
-    assert rev.down_revision == "0007_headcount_breach_state"
-    assert script.get_heads() == ["0008_intruder_alert_cooldown"]
+def test_single_head_every_revision_leads_to_it(script):
+    """Head-agnostic: whichever migration is newest, there is exactly one
+    head, every revision is an ancestor of it and nothing but the head is a
+    leaf, so a new migration must be chained on the real current head."""
+    (head,) = script.get_heads()
+    everything = {r.revision for r in script.walk_revisions()}
+    assert {r.revision for r in script.walk_revisions(base="base", head=head)} == everything
+    leaves = {r for r in everything if not script.get_revision(r).nextrev}
+    assert leaves == {head}

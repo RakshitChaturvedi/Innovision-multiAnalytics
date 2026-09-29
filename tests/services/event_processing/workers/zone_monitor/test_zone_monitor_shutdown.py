@@ -3,33 +3,20 @@ invalidation listener dying because the service closes its connections is
 expected, not an ERROR, and it must not be restarted."""
 import asyncio
 import logging
-import os
-from urllib.parse import urlparse
 
 import pytest
-import redis.asyncio as aioredis
 
 from services.event_processing.src.workers.zone_monitor import consumer as zm
 from services.event_processing.src.workers.zone_monitor.zone_store import (
     INVALIDATION_PATTERN,
 )
-from shared.config import settings
-
-URL = urlparse(os.environ.get("TEST_REDIS_URL", "redis://127.0.0.1:6379/15"))
+from tests.redis_target import TEST_REDIS_DB, point_services_at_test_redis
 
 
 @pytest.fixture
-async def real_redis_env(monkeypatch):
-    client = aioredis.from_url(f"redis://{URL.hostname}:{URL.port or 6379}")
-    try:
-        await client.ping()
-    except Exception:
-        pytest.skip("no Redis")
-    for cfg in (zm.config, settings):
-        monkeypatch.setattr(cfg, "REDIS_HOST", URL.hostname)
-        monkeypatch.setattr(cfg, "REDIS_PORT", URL.port or 6379)
-    yield client
-    await client.aclose()
+async def real_redis_env(monkeypatch, redis_client):
+    point_services_at_test_redis(monkeypatch)
+    yield redis_client
 
 
 async def _listener_subscribed(client) -> None:
@@ -53,6 +40,7 @@ async def test_stop_logs_no_error_and_does_not_restart_listener(real_redis_env, 
     runner = asyncio.create_task(c.start())
     await _listener_subscribed(real_redis_env)
     await asyncio.sleep(0.1)
+    assert c._redis_client.connection_pool.connection_kwargs["db"] == TEST_REDIS_DB
 
     await c.stop()
     runner.cancel()

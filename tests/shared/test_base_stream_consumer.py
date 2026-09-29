@@ -11,6 +11,7 @@ from redis.exceptions import ResponseError
 
 from shared.errors import PermanentError
 from shared.schemas.consumer import BaseStreamConsumer
+from tests.redis_target import TEST_REDIS_DB
 
 STREAM = "events:test"
 GROUP = "test_group"
@@ -21,6 +22,7 @@ def point_settings_at_test_redis(monkeypatch, redis_port):
     from shared.config import settings
     monkeypatch.setattr(settings, "REDIS_HOST", "127.0.0.1")
     monkeypatch.setattr(settings, "REDIS_PORT", redis_port)
+    monkeypatch.setattr(settings, "REDIS_DB", TEST_REDIS_DB)
 
 
 class Probe(BaseStreamConsumer):

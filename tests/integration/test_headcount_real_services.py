@@ -1,16 +1,15 @@
-"""Headcount against REAL Postgres and Redis.
-
-Skipped unless HEADCOUNT_TEST_DATABASE_URL (postgresql+asyncpg://...) and
-HEADCOUNT_TEST_REDIS_URL (redis://host:port/db) are set. Runs the full Alembic graph (needs pgvector) against the target database.
+"""Headcount against REAL Postgres and Redis, with the same setup as every
+other real-service test (tests/conftest.py): the dedicated Redis test
+database (TEST_REDIS_DB) and TEST_DATABASE_URL. These tests drop the schema
+and walk the Alembic graph (needs pgvector), so they use the empty sibling
+database `pg_scratch_url` (TEST_DATABASE_URL + "_scratch").
 """
 import json
-import os
 import uuid
 from datetime import timedelta
 from pathlib import Path
 
 import pytest
-import redis.asyncio as aioredis
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import create_engine, text
@@ -20,23 +19,17 @@ from services.event_processing.src.workers.headcount.config import config
 from services.event_processing.src.workers.headcount.consumer import HeadcountConsumer
 from shared.alerting.publisher import AlertPublisher
 from shared.platform_contracts.alert_event import AlertEvent
+from tests import redis_target
 from tests.services.event_processing.workers.headcount.test_headcount_consumer import (
     ZONE, FakeZones, alert_id_for, make_cfg, payload, T0,
-)
-
-DB_URL = os.environ.get("HEADCOUNT_TEST_DATABASE_URL")
-REDIS_URL = os.environ.get("HEADCOUNT_TEST_REDIS_URL")
-
-pytestmark = pytest.mark.skipif(
-    not (DB_URL and REDIS_URL), reason="real Postgres/Redis not configured"
 )
 
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def _alembic(monkeypatch, *args):
+def _alembic(monkeypatch, db_url, *args):
     """Run the real Alembic graph (needs pgvector: 0001-0003 use it)."""
-    monkeypatch.setenv("DATABASE_URL", DB_URL)
+    monkeypatch.setenv("DATABASE_URL", db_url)
     cfg = Config(str(ROOT / "migrations" / "alembic.ini"))
     cfg.set_main_option("script_location", str(ROOT / "migrations"))
     getattr(command, args[0])(cfg, *args[1:])
@@ -49,39 +42,41 @@ def _reset_schema(engine):
 
 
 @pytest.fixture
-def sync_engine(monkeypatch):
-    engine = create_engine(DB_URL.replace("+asyncpg", "+psycopg2"))
+def sync_engine(monkeypatch, pg_scratch_url):
+    engine = create_engine(pg_scratch_url.replace("+asyncpg", "+psycopg2"))
     _reset_schema(engine)
-    _alembic(monkeypatch, "upgrade", "head")
+    _alembic(monkeypatch, pg_scratch_url, "upgrade", "head")
     yield engine
     engine.dispose()
 
 
 @pytest.fixture
-async def store(monkeypatch, sync_engine):
-    monkeypatch.setattr(config, "DATABASE_URL", DB_URL)
+async def store(monkeypatch, sync_engine, pg_scratch_url):
+    monkeypatch.setattr(config, "DATABASE_URL", pg_scratch_url)
     s = headcount_store.HeadcountStore()
     yield s
     await s.dispose()
 
 
 @pytest.fixture
-async def redis_client():
-    r = aioredis.from_url(REDIS_URL, decode_responses=True)
-    await r.flushdb()
+async def redis_client(redis_client):
+    """The shared test-database client, decoding responses."""
+    import redis.asyncio as aioredis
+
+    r = aioredis.from_url(redis_target.url(), decode_responses=True)
     yield r
     await r.aclose()
 
 
-def test_migration_upgrade_downgrade_roundtrip(monkeypatch, sync_engine):
-    _alembic(monkeypatch, "downgrade", "base")
-    _alembic(monkeypatch, "upgrade", "head")
+def test_migration_upgrade_downgrade_roundtrip(monkeypatch, sync_engine, pg_scratch_url):
+    _alembic(monkeypatch, pg_scratch_url, "downgrade", "base")
+    _alembic(monkeypatch, pg_scratch_url, "upgrade", "head")
 
 
-def test_migration_supersedes_duplicate_open_rows(monkeypatch):
-    engine = create_engine(DB_URL.replace("+asyncpg", "+psycopg2"))
+def test_migration_supersedes_duplicate_open_rows(monkeypatch, pg_scratch_url):
+    engine = create_engine(pg_scratch_url.replace("+asyncpg", "+psycopg2"))
     _reset_schema(engine)
-    _alembic(monkeypatch, "upgrade", "0005_headcount")
+    _alembic(monkeypatch, pg_scratch_url, "upgrade", "0005_headcount")
     z, c = str(uuid.uuid4()), str(uuid.uuid4())
     with engine.begin() as conn:
         for i in range(3):  # old code could leave several 'pending' rows per zone
@@ -89,7 +84,7 @@ def test_migration_supersedes_duplicate_open_rows(monkeypatch):
                 "INSERT INTO headcount_breach_events (id, zone_id, camera_id, count, threshold, timestamp) "
                 "VALUES (gen_random_uuid(), :z, :c, 12, 10, now() + make_interval(secs => :i))"
             ), dict(z=z, c=c, i=i))
-    _alembic(monkeypatch, "upgrade", "head")
+    _alembic(monkeypatch, pg_scratch_url, "upgrade", "head")
     with engine.connect() as conn:
         n = conn.execute(text("SELECT count(*) FROM headcount_breach_events WHERE status='open'")).scalar()
     assert n == 1

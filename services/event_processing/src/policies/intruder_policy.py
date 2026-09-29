@@ -172,6 +172,101 @@ def resolve_identity_conflicts(
     return conflicted, unverified
 
 
+_IDENTIFIED = (IdentityTag.ENROLLED.value, IdentityTag.VISITOR.value)
+
+
+def _identity(row) -> tuple[str, str | None] | None:
+    """(tag, person) of a row that asserts an identity; None for UNKNOWN."""
+    if row["identity_tag"] not in _IDENTIFIED:
+        return None
+    return row["identity_tag"], row.get("person_id")
+
+
+def trim_to_current_identity(rows: list[dict]) -> list[dict]:
+    """
+    A track whose latest rows assert a different identity than its older
+    rows (ByteTrack id switch: enrolled P, then a visitor) keeps only the
+    rows since that switch. UNKNOWN rows (face turned away) assert nothing
+    and never cause a switch.
+    """
+
+    # Stable: rows without a timestamp keep their given order.
+    ordered = sorted(rows, key=lambda r: r.get("timestamp") or 0)
+    current = None
+    for i in range(len(ordered) - 1, -1, -1):
+        identity = _identity(ordered[i])
+        if identity is None:
+            continue
+        if current is None:
+            current = identity
+        elif identity != current:
+            return ordered[i + 1:]
+    return ordered
+
+
+def classification_rows(rows: list[dict], authorized_person_ids) -> list[dict]:
+    """
+    The rows a track is classified from. The switch trimming only ever
+    fails closed: if the track's CURRENT identity is an authorized enrolled
+    person, older contrary rows are kept (they still count against the
+    majority); otherwise only the rows since the switch count.
+    """
+
+    trimmed = trim_to_current_identity(rows)
+    latest = next(
+        (i for i in map(_identity, reversed(trimmed)) if i is not None), None
+    )
+    if (
+        latest is not None
+        and latest[0] == IdentityTag.ENROLLED.value
+        and latest[1] in authorized_person_ids
+    ):
+        return rows
+    return trimmed
+
+
+def resolve_ownership(
+    track_id: int,
+    person_ids,
+    recent_rows_by_track: Mapping[int, list[dict]],
+) -> tuple[set[str], set[str]]:
+    """
+    Recency-based version of resolve_identity_conflicts. Evidence is the
+    ENROLLED rows of each person per track among the track's RECENT rows
+    (caller passes only rows from the last RECOGNITION_RECENT_S before the
+    decision time), after switch trimming (trim_to_current_identity), so a
+    track that switched to someone else no longer owns its old identity.
+
+    Returns (conflicted, unverified) for `track_id`:
+      conflicted -> this track and others hold recent evidence, none
+                    dominates: fail closed
+      unverified -> another track owns the person (or several do without a
+                    winner) and this track has no recent evidence of its own
+    A person nobody has recent evidence for is neither.
+    """
+
+    counts: dict[str, dict[int, int]] = {}
+    for t, rows in recent_rows_by_track.items():
+        for r in trim_to_current_identity(rows):
+            if r["identity_tag"] == IdentityTag.ENROLLED.value and r.get("person_id"):
+                per = counts.setdefault(r["person_id"], {})
+                per[t] = per.get(t, 0) + 1
+
+    conflicted: set[str] = set()
+    unverified: set[str] = set()
+    for person_id in person_ids:
+        per_track = counts.get(person_id, {})
+        if not per_track:
+            continue
+        if track_id not in per_track:
+            unverified.add(person_id)
+            continue
+        c, u = resolve_identity_conflicts(track_id, {person_id: per_track})
+        conflicted |= c
+        unverified |= u
+    return conflicted, unverified
+
+
 def decide(
     rows: list[dict],
     zone_type: str,
@@ -187,7 +282,8 @@ def decide(
     alert is needed. Order:
       1. a blocklisted person in any row -> blocklisted (every zone)
       2. non-restricted zone -> no alert
-      3. no rows at all -> fail closed (unidentified_in_restricted)
+      3. no rows at all -> fail closed (unidentified_in_restricted);
+         then the rows are narrowed by classification_rows (id switch)
       4. an ENROLLED person of this track that is also matched on another
          track with no clearly dominant track (`conflicted_person_ids`, see
          resolve_identity_conflicts) -> fail closed
@@ -220,6 +316,8 @@ def decide(
 
     if not rows:
         return _unidentified(zone_type, authorized_person_ids), None
+
+    rows = classification_rows(rows, authorized_person_ids)
 
     enrolled = [
         r for r in rows

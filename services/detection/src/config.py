@@ -31,6 +31,7 @@ class DetectionSettings(BaseSettings):
 
     redis_host: str = Field(default="redis")
     redis_port: int = Field(default=6379)
+    redis_db: int = Field(default=0)
 
     database_url: str = Field(
         default="postgresql+asyncpg://analytics:analytics@postgres:5432/innovision_analytics",
@@ -105,7 +106,7 @@ class DetectionSettings(BaseSettings):
 
     @property
     def redis_url(self) -> str:
-        return f"redis://{self.redis_host}:{self.redis_port}"
+        return f"redis://{self.redis_host}:{self.redis_port}/{self.redis_db}"
 
 
 settings = DetectionSettings()
