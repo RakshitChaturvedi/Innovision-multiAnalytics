@@ -104,7 +104,7 @@ class DetectionSettings(BaseSettings):
     camera_refresh_s: float = Field(default=60.0)
     camera_registry_timeout_s: float = Field(default=5.0)
 
-    @property
+    # A method, like shared.config.Settings.redis_url(): one API everywhere.
     def redis_url(self) -> str:
         return f"redis://{self.redis_host}:{self.redis_port}/{self.redis_db}"
 

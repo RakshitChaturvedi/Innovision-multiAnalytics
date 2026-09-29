@@ -278,7 +278,7 @@ class DetectionConsumer(BaseStreamConsumer):
 
         # 2. One shared connection for publishing + frame fetch.
         self._side_redis = aioredis.from_url(
-            settings.redis_url,
+            settings.redis_url(),
             health_check_interval=30,
         )
 

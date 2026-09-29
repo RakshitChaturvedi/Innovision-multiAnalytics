@@ -180,3 +180,22 @@ def test_main_without_platform_compose_fails(tmp_path, capsys, monkeypatch):
     monkeypatch.setattr(prereqs, "ROOT", Path(tmp_path))
     assert prereqs.main(["--platform-path", str(tmp_path / "nope")]) == 1
     assert "-PlatformPath" in capsys.readouterr().out
+
+
+def test_warns_when_test_cameras_subscribed_to_uc1(registry, capsys):
+    registry.add("Phone 1")
+    registry.add("Test Camera UC1")
+    registry.add("Test Camera UC2", use_cases=())   # already unsubscribed: not listed
+    r = Reporter()
+    prereqs.check_test_cameras(r, registry.client(), registry.client().by_uc("uc1"), "uc1")
+    out = capsys.readouterr().out
+    assert r.warned == 1 and r.failed == 0
+    assert "WARN test cameras" in out and "Test Camera UC1" in out and "UC2" not in out
+    assert "unsubscribe_test_cameras.ps1" in out
+
+
+def test_no_warning_without_test_cameras(registry, capsys):
+    registry.add("Phone 1")
+    r = Reporter()
+    prereqs.check_test_cameras(r, registry.client(), registry.client().by_uc("uc1"), "uc1")
+    assert r.warned == 0 and "PASS test cameras" in capsys.readouterr().out

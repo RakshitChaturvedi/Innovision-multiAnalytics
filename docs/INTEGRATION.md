@@ -59,6 +59,20 @@ docker compose -f <PlatformPath>\infra\docker-compose.yml up -d
 PASS: run step 1 again and it ends with `RESULT: PASS`. If it FAILs on `stubs`, run the command in its
 FIX (`docker compose -f <PlatformPath>\infra\docker-compose.stubs.yml down`).
 
+### Seed the platform once, or login fails
+
+The platform migration creates the admin user with a **placeholder password hash**. Until the platform's
+`seed_dev.py` has run, every login (step 4, the dashboard) returns **HTTP 500**, not 401. Run it once
+after the first `up -d`. It reads **`DATABASE_URL_LOCAL`** (the platform Postgres as seen from this PC,
+e.g. `localhost:5432`), not `DATABASE_URL` (the in-container host):
+
+```powershell
+$env:DATABASE_URL_LOCAL = "<value of DATABASE_URL_LOCAL in the platform .env>"
+python <PlatformPath>\<path to>\seed_dev.py   # run it from the platform's own venv
+```
+
+PASS: logging in with the seeded admin email and password returns a token (step 4 prompts for them).
+
 ## 3. Test each camera URL
 
 ```powershell
@@ -90,6 +104,22 @@ It prompts for the platform admin email and password. They are never stored.
 
 PASS: `PASS camera: 'Phone 1' created, id ...` and `PASS discovery: ... is listed by /cameras/by-uc/uc1`.
 Keep `-Fps` equal to `TRACKER_FRAME_RATE` in `.env` (5 on CPU).
+
+### 4b. Unsubscribe the platform test cameras
+
+The platform creates **"Test Camera UC1" .. "Test Camera UC4"**, all subscribed to `uc1` and pointing at
+video files. Left alone, detection processes them next to your cameras. Before starting the use case,
+remove their use cases (`PUT /cameras/{id}/config {"use_cases": []}`) for every camera whose name starts
+with "Test Camera":
+
+```powershell
+.\scripts\unsubscribe_test_cameras.ps1 -DryRun   # prints what would change, sends nothing
+.\scripts\unsubscribe_test_cameras.ps1           # prompts for the admin login, then changes them
+```
+
+It prints one line per camera, e.g. `PASS Test Camera UC1: <id> use_cases ['uc1'] -> []`; cameras that
+already have no use cases are reported as unchanged. Step 1 WARNs (`WARN test cameras`) while
+`/cameras/by-uc/uc1` still lists any "Test Camera*". Then restart Alert Management (step 5).
 
 ## 5. Restart Alert Management
 
@@ -126,6 +156,10 @@ docker compose -f <PlatformPath>\infra\docker-compose.yml restart ingestion
 ```
 
 PASS: step 8 finds a frame for every camera.
+
+**One viewer at a time.** A phone camera app (DroidCam and similar) may accept only ONE client. Before
+ingestion connects, close everything else reading the stream: `test_camera_url.ps1` (step 3), browser
+tabs and VLC. Otherwise ingestion cannot connect, or the app drops it when you open another viewer.
 
 ## 8. Snapshot each camera
 
@@ -273,6 +307,9 @@ Send the zip.
   Step 1 checks that the two are equal.
 * **Restart Alert Management after registering cameras** (step 5). It loads cameras only at startup.
   Until then, alerts for new cameras fail validation.
+* **Login returns 500 until `seed_dev.py` has run** (step 2): the migration's admin password hash is a
+  placeholder. The seed script reads `DATABASE_URL_LOCAL`.
+* **"Test Camera UC1-UC4" are subscribed to uc1** and read video files. Unsubscribe them (step 4b).
 * **Set phones to 16:9.** The platform stretches every source to 1920x1080, so a 4:3 image distorts
   people and zones. Step 3 warns about this.
 * **The platform camera status is unreliable** (a camera can show offline while frames flow). Use step
