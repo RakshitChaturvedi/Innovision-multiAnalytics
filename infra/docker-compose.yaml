@@ -47,7 +47,9 @@ services:
       - minio_data:/data
     command: server /data --console-address ":9001"
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      # The minio image ships mc (not a guaranteed curl); "local" is mc's
+      # built-in alias for http://localhost:9000.
+      test: ["CMD", "mc", "ready", "local"]
       interval: 30s
       timeout: 10s
       retries: 3
