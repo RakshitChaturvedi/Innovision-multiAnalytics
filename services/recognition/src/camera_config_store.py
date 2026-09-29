@@ -41,7 +41,10 @@ class CameraConfigStore:
         self,
         ttl_seconds: float = CACHE_TTL_SECONDS,
         clock: Callable[[], float] = time.monotonic,
+        stopping: asyncio.Event | None = None,
     ) -> None:
+        # Shared with the owning consumer: set when the service stops.
+        self._stopping = stopping if stopping is not None else asyncio.Event()
         self._engine = create_async_engine(config.DATABASE_URL)
         self._session_factory = async_sessionmaker(self._engine, expire_on_commit=False)
         self._ttl = ttl_seconds
@@ -56,11 +59,12 @@ class CameraConfigStore:
         """Optional — enables live cache invalidation via Pub/Sub."""
         self._redis = redis_client
         self._listener_task = asyncio.create_task(
-            supervise("camera_config_listener", self._listen_invalidations),
+            supervise("camera_config_listener", self._listen_invalidations, stopping=self._stopping),
             name="camera-config-listener",
         )
 
     async def close(self) -> None:
+        self._stopping.set()  # a listener dying from here on is not restarted
         task, self._listener_task = self._listener_task, None
         if task is not None:
             task.cancel()

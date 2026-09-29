@@ -374,6 +374,39 @@ async def test_side_by_side_each_track_gets_its_own_identity(rc):
 # ---------------------------------------------------------------- 10. stop()
 
 
+async def test_listener_dying_while_stopping_is_not_an_error(rc, redis, redis_port, monkeypatch, caplog):
+    """Real shutdown sequence: stop() drains in-flight work while connections
+    go away; the pub/sub listener dies. Before: ERROR 'crashed; restarting'."""
+    import asyncio
+
+    import redis.asyncio as aioredis
+
+    from shared.schemas.consumer import BaseStreamConsumer
+
+    async def noop():
+        pass
+
+    rc._cache._load_all = noop
+    rc._pubsub_redis = aioredis.from_url(f"redis://127.0.0.1:{redis_port}")
+    await rc._cache.initialize(rc._pubsub_redis)
+    for _ in range(100):
+        if rc._cache._listener_runs:
+            break
+        await asyncio.sleep(0.02)
+    assert rc._cache._listener_runs == 1
+
+    async def draining_stop(self):
+        await redis.client_kill_filter(_type="pubsub")  # connection lost while draining
+        await asyncio.sleep(0.5)
+
+    monkeypatch.setattr(BaseStreamConsumer, "stop", draining_stop)
+    with caplog.at_level(logging.DEBUG):
+        await rc.stop()
+
+    assert [r.message for r in caplog.records if r.levelno >= logging.ERROR] == []
+    assert rc._cache._listener_runs == 1  # not restarted
+
+
 async def test_stop_disposes_all_engines_and_cancels_tasks(rc):
     disposed = []
 

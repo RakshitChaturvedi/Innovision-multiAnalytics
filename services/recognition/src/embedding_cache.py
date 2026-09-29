@@ -58,7 +58,9 @@ class EmbeddingCache:
     person_id_to_idx:   dict[str, int] — fast partial updates
     """
 
-    def __init__(self) -> None:
+    def __init__(self, stopping: asyncio.Event | None = None) -> None:
+        # Shared with the owning consumer: set when the service stops.
+        self._stopping = stopping if stopping is not None else asyncio.Event()
         self.enrolled_matrix: np.ndarray = np.zeros((0, 512), dtype=np.float32)
         self.enrolled_persons: list[dict] = []
         self.person_id_to_idx: dict[str, int] = {}
@@ -73,12 +75,13 @@ class EmbeddingCache:
         self._redis = redis_client
         await self._load_all()
         self._listener_task = asyncio.create_task(
-            supervise("embedding_cache_listener", self._listen_invalidations),
+            supervise("embedding_cache_listener", self._listen_invalidations, stopping=self._stopping),
             name="embedding-cache-listener",
         )
         logger.info("embedding_cache_ready enrolled_count=%d", len(self.enrolled_persons))
 
     async def close(self) -> None:
+        self._stopping.set()  # a listener dying from here on is not restarted
         task, self._listener_task = self._listener_task, None
         if task is not None:
             task.cancel()

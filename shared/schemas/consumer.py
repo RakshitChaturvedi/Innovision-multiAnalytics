@@ -69,6 +69,9 @@ class BaseStreamConsumer(ABC):
         self._running = False
         self._started = False
         self._loop_done = asyncio.Event()
+        # Set first thing in stop(): background tasks that die from here on are
+        # shutting down, not crashing (no ERROR log, no restart).
+        self._shutdown = asyncio.Event()
         self._inflight: set[asyncio.Task] = set()
         self._active: set[tuple[str, str]] = set()  # (stream, msg_id) queued/processing
         self._key_locks: dict[str, asyncio.Lock] = {}
@@ -103,6 +106,7 @@ class BaseStreamConsumer(ABC):
         self.redis = aioredis.from_url(settings.redis_url(), health_check_interval=30)
         await self._ensure_groups(self.streams)
 
+        self._shutdown.clear()
         self._running = True
         self._started = True
         self._loop_done.clear()
@@ -127,6 +131,7 @@ class BaseStreamConsumer(ABC):
 
     async def stop(self) -> None:
         """Stop reading, let in-flight work finish (timeout), close Redis."""
+        self._shutdown.set()
         self._running = False
 
         if self._started:
@@ -518,10 +523,19 @@ class BaseStreamConsumer(ABC):
             except asyncio.CancelledError:
                 raise
             except Exception:
+                if self._shutdown.is_set():
+                    logger.debug(
+                        "%s background task %s stopped during shutdown",
+                        self.consumer_name, name, exc_info=True,
+                    )
+                    return
                 logger.exception(
                     "%s background task %s crashed; restarting", self.consumer_name, name
                 )
-                await asyncio.sleep(1 + random.random())
+                try:
+                    await asyncio.wait_for(self._shutdown.wait(), 1 + random.random())
+                except TimeoutError:
+                    pass
 
     async def _stats_loop(self) -> None:
         while self._running:

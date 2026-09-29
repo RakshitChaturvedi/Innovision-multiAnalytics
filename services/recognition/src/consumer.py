@@ -75,7 +75,7 @@ class RecognitionConsumer(BaseStreamConsumer):
             consumer_name=config.CONSUMER_NAME,
         )
         self._model_loader = RecognitionModelLoader()
-        self._cache = EmbeddingCache()
+        self._cache = EmbeddingCache(stopping=self._shutdown)
         self._cropper = FaceCropper()
         self._head_cfg = HeadRegionConfig(
             width_frac=config.HEAD_WIDTH_FRAC,
@@ -89,7 +89,7 @@ class RecognitionConsumer(BaseStreamConsumer):
             quality_improvement_threshold=config.QUALITY_IMPROVEMENT_THRESHOLD,
             stale_ttl_seconds=config.STALE_TRACK_TTL_SECONDS,
         )
-        self._cam_config = CameraConfigStore()
+        self._cam_config = CameraConfigStore(stopping=self._shutdown)
         self._engine = create_async_engine(config.DATABASE_URL)
         self._session_factory = async_sessionmaker(self._engine, expire_on_commit=False)
         self._pubsub_redis: aioredis.Redis | None = None
@@ -115,7 +115,7 @@ class RecognitionConsumer(BaseStreamConsumer):
         await self._cam_config.initialize(self._pubsub_redis)
 
         self._sweeper_task = asyncio.create_task(
-            supervise("stale_track_sweeper", self._stale_track_sweeper),
+            supervise("stale_track_sweeper", self._stale_track_sweeper, stopping=self._shutdown),
             name="recognition-stale-sweeper",
         )
 
@@ -127,6 +127,9 @@ class RecognitionConsumer(BaseStreamConsumer):
 
     async def stop(self) -> None:
         """Safe to call at any point of start(), and more than once."""
+        # First: listeners/sweepers that die while we drain are stopping, not
+        # crashing (no ERROR, no restart).
+        self._shutdown.set()
         task, self._sweeper_task = self._sweeper_task, None
         if task is not None:
             task.cancel()

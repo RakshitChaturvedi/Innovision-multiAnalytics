@@ -89,7 +89,7 @@ async def test_supervise_restarts_and_logs_crashes(caplog):
 
     task = asyncio.create_task(supervise("t", flaky, min_backoff=0.01, max_backoff=0.02))
     await wait_for(lambda: len(runs) >= 3)
-    assert sum("crashed; restarting" in r.message for r in caplog.records) == 2
+    assert sum("background_task_crashed" in r.message for r in caplog.records) == 2
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
