@@ -1,0 +1,287 @@
+"""REAL PostgreSQL + REAL Redis (each test skips if its service is unreachable)."""
+import asyncio
+
+import pytest
+
+from services.event_processing.src.workers.intruder.config import config
+from services.event_processing.src.workers.intruder.consumer import IntruderConsumer
+from services.event_processing.src.workers.intruder.processor import IntruderProcessor
+from services.event_processing.src.workers.intruder.repository import IntruderRepository
+from shared.alerting.publisher import AlertPublisher
+from shared.errors import PermanentError
+from shared.platform_contracts.alert_event import AlertEvent
+from shared.schemas.enums import EventType
+
+from .conftest import T0, alerts, zone_event
+
+
+async def test_unknown_person_alerts(db, make_processor, redis_client):
+    await db.zone()
+    await db.recognition("unknown", at=-1)
+    proc, _ = make_processor()
+
+    await proc.handle(zone_event())
+
+    (alert,) = await alerts(redis_client)
+    assert alert["alert_type"] == "intruder"
+    assert alert["severity"] == "critical"
+    assert alert["source_uc"] == "uc1"
+    assert alert["frame_provider"] == "minio"
+    AlertEvent.model_validate(alert)  # platform contract accepts it
+
+    (row,) = await db.intruder_events()
+    assert row.classification_reason == "unknown_in_restricted"
+    assert row.alert_published is True
+    assert str(row.alert_id) == alert["alert_id"]
+
+
+async def test_no_recognition_fails_closed(db, make_processor, redis_client, sleeps):
+    await db.zone()
+    proc, _ = make_processor()
+
+    await proc.handle(zone_event())
+
+    (alert,) = await alerts(redis_client)
+    assert alert["alert_type"] == "intruder"
+    assert alert["severity"] == "high"
+    assert alert["metadata"]["classification_reason"] == "unidentified_in_restricted"
+    # 5 attempts, 0.3 s between them
+    assert sleeps.calls == [config.RECOGNITION_LOOKUP_DELAY_SECONDS] * 4
+    assert config.RECOGNITION_LOOKUP_DELAY_SECONDS == 0.3
+
+
+async def test_no_recognition_outside_restricted_zone_does_not_alert(db, make_processor, redis_client, sleeps):
+    await db.zone(type_="monitored")
+    proc, _ = make_processor()
+    await proc.handle(zone_event())
+    assert await alerts(redis_client) == []
+    assert sleeps.calls == []  # no waiting where fail-closed doesn't apply
+
+
+async def test_authorized_enrolled_never_alerts(db, make_processor, redis_client):
+    await db.zone()
+    person = await db.person(authorized=True)
+    await db.recognition("enrolled", person=person, at=-2)
+    proc, _ = make_processor()
+
+    await proc.handle(zone_event())
+
+    assert await alerts(redis_client) == []
+    assert await db.intruder_events() == []
+
+
+async def test_authorized_row_wins_over_better_unknown_row(db, make_processor, redis_client):
+    await db.zone()
+    person = await db.person(authorized=True)
+    await db.recognition("enrolled", person=person, at=-3, sim=0.6)
+    await db.recognition("unknown", at=-1, sim=0.99)  # face turned away, better score
+    proc, _ = make_processor()
+
+    await proc.handle(zone_event())
+
+    assert await alerts(redis_client) == []
+
+
+async def test_blocklisted_wins_even_if_authorized(db, make_processor, redis_client):
+    await db.zone()
+    person = await db.person(authorized=True, blocklisted=True)
+    await db.recognition("enrolled", person=person)
+    proc, _ = make_processor()
+
+    await proc.handle(zone_event())
+
+    (alert,) = await alerts(redis_client)
+    assert alert["severity"] == "critical"
+    assert alert["metadata"]["classification_reason"] == "blocklisted"
+    assert alert["alert_type"] == "intruder"
+
+
+async def test_enrolled_unauthorized_is_restricted_entry(db, make_processor, redis_client):
+    await db.zone()
+    person = await db.person()
+    await db.recognition("enrolled", person=person)
+    proc, _ = make_processor()
+
+    await proc.handle(zone_event())
+
+    (alert,) = await alerts(redis_client)
+    assert alert["alert_type"] == "restricted_entry"
+    assert alert["severity"] == "high"
+
+
+async def test_visitor_is_restricted_entry(db, make_processor, redis_client):
+    await db.zone()
+    await db.recognition("visitor")
+    proc, _ = make_processor()
+    await proc.handle(zone_event())
+    (alert,) = await alerts(redis_client)
+    assert alert["alert_type"] == "restricted_entry"
+
+
+async def test_publish_fails_once_then_retry_yields_exactly_one_alert(db, make_processor, redis_client):
+    await db.zone()
+    await db.recognition("unknown")
+    proc, publisher = make_processor(fail_times=1)
+    ev = zone_event()
+
+    with pytest.raises(ConnectionError):
+        await proc.handle(ev)
+
+    assert await alerts(redis_client) == []
+    (row,) = await db.intruder_events()
+    assert row.alert_published is False  # row exists, alert still owed
+
+    await proc.handle(ev)  # redelivery
+
+    (alert,) = await alerts(redis_client)
+    (row,) = await db.intruder_events()
+    assert row.alert_published is True
+    assert str(row.alert_id) == alert["alert_id"]
+    assert publisher.attempts == 2
+
+
+async def test_crash_after_publish_republishes_same_alert_id(db, make_processor, redis_client, monkeypatch):
+    await db.zone()
+    await db.recognition("unknown")
+    proc, _ = make_processor()
+    ev = zone_event()
+
+    real = proc._repo.mark_published
+    calls = {"n": 0}
+
+    async def flaky(*a, **k):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise ConnectionError("db down")
+        return await real(*a, **k)
+
+    monkeypatch.setattr(proc._repo, "mark_published", flaky)
+
+    with pytest.raises(ConnectionError):
+        await proc.handle(ev)
+    await proc.handle(ev)
+
+    sent = await alerts(redis_client)
+    assert len(sent) == 2  # at-least-once...
+    assert sent[0]["alert_id"] == sent[1]["alert_id"]  # ...but the platform dedupes on alert_id
+    assert len(await db.intruder_events()) == 1
+
+
+async def test_dwell_and_redelivery_do_not_duplicate(db, make_processor, redis_client):
+    await db.zone()
+    await db.recognition("unknown")
+    proc, _ = make_processor()
+
+    await proc.handle(zone_event(EventType.ENTERED, at=0))
+    await proc.handle(zone_event(EventType.ENTERED, at=0))  # redelivered
+    await proc.handle(zone_event(EventType.DWELL, at=5, seq=20))
+
+    assert len(await alerts(redis_client)) == 1
+    assert len(await db.intruder_events()) == 1
+
+
+async def test_concurrent_duplicates_create_one_row_and_one_alert_id(db, pg_session_factory, redis_client, sleeps):
+    await db.zone()
+    await db.recognition("unknown")
+
+    def make():
+        return IntruderProcessor(
+            IntruderRepository(pg_session_factory), AlertPublisher(redis_client), sleep=sleeps
+        )
+
+    ev = zone_event()
+    await asyncio.gather(make().handle(ev), make().handle(ev))
+
+    assert len(await db.intruder_events()) == 1
+    assert len({a["alert_id"] for a in await alerts(redis_client)}) == 1
+
+
+async def test_exit_resolves_at_event_time_and_new_intrusion_alerts_again(db, make_processor, redis_client):
+    await db.zone()
+    await db.recognition("unknown", at=0)
+    proc, _ = make_processor()
+
+    await proc.handle(zone_event(EventType.ENTERED, at=0))
+    await proc.handle(zone_event(EventType.EXITED, at=4, seq=30))
+
+    (row,) = await db.intruder_events()
+    assert row.alert_status == "resolved"
+    assert row.resolved_at == T0.replace(second=4)
+
+    # same track re-enters: a fresh intrusion, a fresh alert
+    await db.recognition("unknown", at=9)
+    await proc.handle(zone_event(EventType.ENTERED, at=10, seq=40))
+    assert len(await db.intruder_events()) == 2
+    assert len({a["alert_id"] for a in await alerts(redis_client)}) == 2
+
+
+async def test_late_redelivery_of_a_resolved_zone_event_is_ignored(db, make_processor, redis_client):
+    await db.zone()
+    await db.recognition("unknown")
+    proc, _ = make_processor()
+    entered = zone_event(EventType.ENTERED, at=0)
+
+    await proc.handle(entered)
+    await proc.handle(zone_event(EventType.EXITED, at=4, seq=30))
+    await proc.handle(entered)  # old message reclaimed after the row was resolved
+
+    (row,) = await db.intruder_events()
+    assert row.alert_status == "resolved"
+    assert len(await alerts(redis_client)) == 1
+
+
+async def test_exit_without_open_event_is_a_noop(db, make_processor):
+    await db.zone()
+    proc, _ = make_processor()
+    await proc.handle(zone_event(EventType.EXITED))
+    assert await db.intruder_events() == []
+
+
+async def test_recognition_outside_time_window_is_ignored(db, make_processor, redis_client):
+    await db.zone()
+    person = await db.person(authorized=True)
+    # An authorized match, but 60 s old and 10 s in the future: both ignored.
+    await db.recognition("enrolled", person=person, at=-60)
+    await db.recognition("enrolled", person=person, at=10)
+    proc, _ = make_processor()
+
+    await proc.handle(zone_event(at=0))
+
+    (alert,) = await alerts(redis_client)
+    assert alert["metadata"]["classification_reason"] == "unidentified_in_restricted"
+
+
+async def test_recognition_at_window_edges_counts(db, make_processor, redis_client):
+    await db.zone()
+    person = await db.person(authorized=True)
+    await db.recognition("enrolled", person=person, at=-30)  # exactly MAX_AGE
+    proc, _ = make_processor()
+    await proc.handle(zone_event(at=0))
+    assert await alerts(redis_client) == []
+
+
+async def test_recognition_for_other_track_is_ignored(db, make_processor, redis_client):
+    await db.zone()
+    person = await db.person(authorized=True)
+    await db.recognition("enrolled", person=person, track=99)
+    proc, _ = make_processor()
+    await proc.handle(zone_event(track=7))
+    assert len(await alerts(redis_client)) == 1
+
+
+async def test_unknown_zone_is_permanent(make_processor, db):
+    proc, _ = make_processor()
+    with pytest.raises(PermanentError):
+        await proc.handle(zone_event())
+
+
+async def test_consumer_rejects_bad_payloads_as_permanent():
+    consumer = IntruderConsumer()
+    consumer._processor = object()
+    try:
+        with pytest.raises(PermanentError):
+            await consumer.process("1-0", {b"other": b"x"}, "events:zone")
+        with pytest.raises(PermanentError):
+            await consumer.process("1-0", {b"data": b"{not json"}, "events:zone")
+    finally:
+        await consumer._engine.dispose()
