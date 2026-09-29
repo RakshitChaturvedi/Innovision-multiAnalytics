@@ -241,6 +241,90 @@ async def test_track_failure_is_not_swallowed_and_track_is_resampled(rc):
     assert len(rc._db.tables("recognition_events")) == 1
 
 
+# ------------------------------------------------- 3b. sampling before I/O
+
+
+@pytest.fixture
+def fetch_spy(monkeypatch):
+    calls = []
+    real = consumer_mod.fetch_frame
+
+    async def spy(*args, **kwargs):
+        calls.append(kwargs["frame_seq"])
+        return await real(*args, **kwargs)
+
+    monkeypatch.setattr(consumer_mod, "fetch_frame", spy)
+    return calls
+
+
+async def test_no_fetch_when_no_track_is_due(rc, fetch_spy):
+    """Before: every frame with a face track was fetched and decoded, even
+    when sampling then skipped every track."""
+    cam = uuid.uuid4()
+    for seq in (1, 2, 3):  # sample_rate 10: only seq 1 (new track) is due
+        ev = detection_event(camera_id=cam, frame_seq=seq)
+        await rc.redis.set(ev["frame_reference"], jpeg())
+        msg_id, fields = await deliver(rc, ev)
+        await rc._handle(STREAM, msg_id, fields)
+
+    assert fetch_spy == [1]
+    assert rc.stats()["frames_not_due"] == 2
+    assert len(rc._db.tables("recognition_events")) == 1
+    assert await pending(rc) == 0
+
+
+async def test_one_fetch_when_any_track_is_due(rc, fetch_spy):
+    cam = uuid.uuid4()
+    face = {"x1": 0.1, "y1": 0.1, "x2": 0.6, "y2": 0.7}
+    t7 = {"track_id": 7, "bbox": face, "confidence": 0.9, "class_label": "person",
+          "has_face": True, "face_bbox": face}
+    ev = detection_event(camera_id=cam, frame_seq=1, tracks=[t7])
+    await rc.redis.set(ev["frame_reference"], jpeg())
+    await rc._handle(STREAM, *(await deliver(rc, ev)))
+    # seq 2: track 7 not due, new track 8 due -> exactly one fetch
+    ev = detection_event(camera_id=cam, frame_seq=2, tracks=[t7, {**t7, "track_id": 8}])
+    await rc.redis.set(ev["frame_reference"], jpeg())
+    await rc._handle(STREAM, *(await deliver(rc, ev)))
+
+    assert fetch_spy == [1, 2]
+    assert rc._model_loader.calls == 2  # track 7 once, track 8 once
+
+
+async def test_expired_frame_keeps_tracks_due_for_the_next_frame(rc, fetch_spy):
+    cam = uuid.uuid4()
+    await rc._handle(STREAM, *(await deliver(rc, detection_event(camera_id=cam, frame_seq=1))))
+    assert rc.stats()["frame_expired"] == 1
+    ev = detection_event(camera_id=cam, frame_seq=2)
+    await rc.redis.set(ev["frame_reference"], jpeg())
+    await rc._handle(STREAM, *(await deliver(rc, ev)))
+
+    assert fetch_spy == [1, 2]  # not skipped as "sampled" at seq 1
+    assert len(rc._db.tables("recognition_events")) == 1
+
+
+async def test_transient_fetch_error_keeps_tracks_due_on_retry(rc, monkeypatch):
+    ev = detection_event(frame_seq=1)
+    await rc.redis.set(ev["frame_reference"], jpeg())
+    real = consumer_mod.fetch_frame
+    attempts = []
+
+    async def flaky(*args, **kwargs):
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise ConnectionError("redis blip")
+        return await real(*args, **kwargs)
+
+    monkeypatch.setattr(consumer_mod, "fetch_frame", flaky)
+    msg_id, fields = await deliver(rc, ev)
+    await rc._handle(STREAM, msg_id, fields)
+    assert await pending(rc) == 1  # transient: stays pending
+    await rc._handle(STREAM, msg_id, fields)  # redelivery
+
+    assert len(attempts) == 2
+    assert len(rc._db.tables("recognition_events")) == 1
+    assert await pending(rc) == 0
+
+
 # ------------------------------------------------------- 4. identity swap
 
 

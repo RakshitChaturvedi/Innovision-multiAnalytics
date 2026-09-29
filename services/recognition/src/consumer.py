@@ -175,29 +175,65 @@ class RecognitionConsumer(BaseStreamConsumer):
         if not face_tracks:
             return
 
-        cam_cfg = await self._cam_config.get(str(detection_event.camera_id))
-
-        try:
-            frame_bytes = await fetch_frame(
-                self.redis,
-                self._minio,
-                camera_id=detection_event.camera_id,
+        # Sampling decides BEFORE any I/O: most frames have no track due, and
+        # those must not cost a frame fetch + JPEG decode.
+        camera_id = str(detection_event.camera_id)
+        due = [
+            t for t in face_tracks
+            if self._sampler.should_sample(
+                camera_id=camera_id,
+                track_id=t.track_id,
                 frame_seq=detection_event.frame_seq,
-                frame_reference=detection_event.frame_reference,
-                frame_provider=detection_event.frame_provider,
+                quality_score=t.confidence,
             )
+        ]
+        if not due:
+            self._count("frames_not_due")
+            return
+
+        # Tracks finished for THIS message (per call: cameras run concurrently).
+        done: set[int] = set()
+        try:
+            await self._recognize(detection_event, due, done)
         except FrameUnavailable as exc:
             # Gone from Redis and MinIO (expired, or MinIO not configured /
             # unreachable). Retrying cannot help and it is routine when
             # recognition lags behind the Redis TTL: count, log, ack (return)
             # like detection does, instead of dead-lettering every frame.
+            # Nothing was recognized, so the due tracks are sampled again on
+            # the next frame.
             self._count("frame_expired")
             logger.warning(
                 "frame_expired camera=%s seq=%s ref=%s: %s",
                 detection_event.camera_id, detection_event.frame_seq,
                 detection_event.frame_reference, exc,
             )
+            for track in due:
+                self._sampler.evict(camera_id, track.track_id)
             return
+        except PermanentError:
+            raise
+        except Exception:
+            # Transient: the message is redelivered. Forget the sampler state
+            # of the tracks not finished, so the retry samples them again
+            # instead of skipping them as "not due". Persistence is idempotent.
+            for track in due:
+                if track.track_id not in done:
+                    self._sampler.evict(camera_id, track.track_id)
+            raise
+
+    async def _recognize(self, detection_event: DetectionEvent, due: list, done: set[int]) -> None:
+        cam_cfg = await self._cam_config.get(str(detection_event.camera_id))
+
+        # FrameUnavailable propagates to process() (acked there).
+        frame_bytes = await fetch_frame(
+            self.redis,
+            self._minio,
+            camera_id=detection_event.camera_id,
+            frame_seq=detection_event.frame_seq,
+            frame_reference=detection_event.frame_reference,
+            frame_provider=detection_event.frame_provider,
+        )
 
         frame = await asyncio.to_thread(_decode_jpeg, frame_bytes)
         if frame is None:
@@ -206,38 +242,30 @@ class RecognitionConsumer(BaseStreamConsumer):
             raise PermanentError(f"frame not decodable: {detection_event.frame_reference}")
 
         failures: list[Exception] = []
-        for track in face_tracks:
+        for track in due:
             try:
                 await self._process_track(
                     detection_event=detection_event, track=track, frame=frame, cam_cfg=cam_cfg,
                 )
+                done.add(track.track_id)
             except PermanentError:
                 raise
             except Exception as exc:
                 # One bad track must not block the other tracks of this frame,
-                # but the failure must not be swallowed either: forget the
-                # track's sampler state (so the retry is not skipped by
-                # sampling) and re-raise after the loop so the message stays
-                # pending and is redelivered. Persistence is idempotent.
+                # but the failure must not be swallowed either: re-raise after
+                # the loop so the message stays pending and is redelivered
+                # (process() evicts the sampler state of the failed tracks).
                 logger.exception(
                     "track_processing_failed camera=%s track=%d",
                     detection_event.camera_id, track.track_id,
                 )
-                self._sampler.evict(str(detection_event.camera_id), track.track_id)
                 failures.append(exc)
         if failures:
             raise failures[0]
 
     async def _process_track(self, detection_event: DetectionEvent, track, frame, cam_cfg: dict) -> None:
+        """Recognize one track that sampling already selected."""
         camera_id = str(detection_event.camera_id)
-
-        if not self._sampler.should_sample(
-            camera_id=camera_id,
-            track_id=track.track_id,
-            frame_seq=detection_event.frame_seq,
-            quality_score=track.confidence,
-        ):
-            return
 
         crop_result = self._cropper.crop(frame, track.face_bbox)
         if crop_result is None:
