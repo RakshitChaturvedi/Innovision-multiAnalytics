@@ -34,7 +34,7 @@ class BreachRepository(Protocol):
         timestamp: datetime,
     ) -> OpenBreach: ...
 
-    async def mark_alert_published(self, breach_id: str) -> None: ...
+    async def mark_alert_published(self, breach_id: str, alert_id: str) -> None: ...
 
     async def resolve_breach(
         self, breach_id: str, timestamp: datetime, reason: str
@@ -149,18 +149,19 @@ class HeadcountStore:
                     str(row.id), zone_id, camera_id, bool(row.alert_published)
                 )
 
-    async def mark_alert_published(self, breach_id: str) -> None:
+    async def mark_alert_published(self, breach_id: str, alert_id: str) -> None:
         async with self._session_factory() as session:
             async with session.begin():
                 await session.execute(
                     text(
                         """
                         UPDATE headcount_breach_events
-                        SET alert_published = true
+                        SET alert_published = true,
+                            alert_id = CAST(:alert_id AS uuid)
                         WHERE id = CAST(:id AS uuid)
                         """
                     ),
-                    {"id": breach_id},
+                    {"id": breach_id, "alert_id": str(alert_id)},
                 )
 
     async def resolve_breach(

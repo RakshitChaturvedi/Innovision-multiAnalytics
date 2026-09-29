@@ -296,7 +296,7 @@ class HeadcountConsumer(BaseStreamConsumer):
             },
         )
         await self._alerts.publish(alert)
-        await self._repo.mark_alert_published(zs.breach_id)
+        await self._repo.mark_alert_published(zs.breach_id, str(alert.alert_id))
         zs.alert_published = True
         self.metrics["alerts_published"] += 1
 
