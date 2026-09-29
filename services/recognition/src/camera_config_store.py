@@ -26,6 +26,10 @@ logger = logging.getLogger(__name__)
 
 CACHE_TTL_SECONDS = 60.0
 _UNDEFINED_TABLE_SQLSTATE = "42P01"
+# camera_config.blur_threshold default before 0008_blur_recalibration. The blur
+# score changed scale (quality_gate.blur_score), so this value now rejects
+# every face; the migration rewrites rows still at exactly this value.
+LEGACY_BLUR_THRESHOLD = 100.0
 
 
 def _is_missing_table(exc: DBAPIError) -> bool:
@@ -54,6 +58,7 @@ class CameraConfigStore:
         self._listener_task: asyncio.Task | None = None
         self._warned_missing_table = False
         self._warned_missing_row: set[str] = set()
+        self._warned_legacy_blur: set[str] = set()
 
     async def initialize(self, redis_client: aioredis.Redis) -> None:
         """Optional — enables live cache invalidation via Pub/Sub."""
@@ -61,6 +66,31 @@ class CameraConfigStore:
         self._listener_task = asyncio.create_task(
             supervise("camera_config_listener", self._listen_invalidations, stopping=self._stopping),
             name="camera-config-listener",
+        )
+
+    async def warn_legacy_blur_thresholds(self) -> None:
+        """Startup check: one WARNING per camera still at the old blur threshold."""
+        try:
+            async with self._session_factory() as session:
+                rows = (await session.execute(text(
+                    "SELECT camera_id FROM camera_config WHERE blur_threshold = :legacy"
+                ), {"legacy": LEGACY_BLUR_THRESHOLD})).fetchall()
+        except DBAPIError as exc:
+            # Not fatal: _load() repeats the check per camera when it loads it.
+            logger.warning("camera_config_legacy_blur_check_failed error=%s", exc)
+            return
+        for row in rows:
+            self._warn_legacy_blur(str(row.camera_id))
+
+    def _warn_legacy_blur(self, camera_id: str) -> None:
+        if camera_id in self._warned_legacy_blur:
+            return
+        self._warned_legacy_blur.add(camera_id)
+        logger.warning(
+            "camera_blur_threshold_legacy camera_id=%s blur_threshold=%.1f: this is the "
+            "pre-0008 default on the old score scale and rejects nearly every face; "
+            "run the migrations or set it (default now %.1f, see docs/DEMO_TUNING.md)",
+            camera_id, LEGACY_BLUR_THRESHOLD, config.DEFAULT_BLUR_THRESHOLD,
         )
 
     async def close(self) -> None:
@@ -113,6 +143,8 @@ class CameraConfigStore:
                 logger.warning("camera_config_row_missing camera_id=%s using_defaults", camera_id)
             return self._defaults()
 
+        if result.blur_threshold == LEGACY_BLUR_THRESHOLD:
+            self._warn_legacy_blur(camera_id)
         defaults = self._defaults()
         return {
             "similarity_threshold": result.similarity_threshold if result.similarity_threshold is not None else defaults["similarity_threshold"],

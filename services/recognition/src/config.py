@@ -83,5 +83,9 @@ class RecognitionConfig(ServiceSettings):
     STALE_TRACK_TTL_SECONDS: float = 120.0
     STALE_TRACK_SWEEP_INTERVAL_SECONDS: float = 30.0
 
+    # A camera with face tracks due for recognition but no row written for
+    # this long (event time) logs one recognition_starved WARNING per outage.
+    RECOGNITION_STARVED_AFTER_S: float = 120.0
+
 
 config = RecognitionConfig()
