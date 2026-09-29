@@ -1,6 +1,5 @@
 """tools/platform/services.py: real background processes, real /health (Redis db 15 + Postgres)."""
 import socket
-import sys
 import time
 
 import pytest

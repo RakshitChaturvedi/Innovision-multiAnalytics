@@ -224,3 +224,4 @@ camera_test_*.jpg
 snapshot_*.png
 logs/
 diagnostics_*.zip
+/config.yaml

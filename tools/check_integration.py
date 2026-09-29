@@ -27,7 +27,7 @@ import json
 import re
 import time
 from collections import Counter
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from uuid import UUID
 
 from tools.platform.common import (

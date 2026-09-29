@@ -18,7 +18,6 @@ import argparse
 import getpass
 import sys
 import time
-from pathlib import Path
 
 from tools.platform.common import (
     Camera, RegistryClient, RegistryError, Reporter, compose_services, find_service,

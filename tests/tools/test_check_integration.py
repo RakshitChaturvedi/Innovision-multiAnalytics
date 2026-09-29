@@ -1,6 +1,5 @@
 """tools/check_integration.py exit codes against REAL Redis (db 15) and Postgres:
 the analytics test database plus a throwaway 'platform' database with an alerts table."""
-import asyncio
 import json
 import threading
 import time

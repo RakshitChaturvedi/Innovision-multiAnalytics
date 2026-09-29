@@ -1,5 +1,4 @@
 """tools/platform/diagnostics.py: zip contents, masking, no binaries; streams on REAL Redis."""
-import asyncio
 import zipfile
 
 from tests import redis_target

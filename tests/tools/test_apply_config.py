@@ -1,5 +1,4 @@
 """tools/config/apply_config.py against REAL Postgres + Redis (db 15), fake face model."""
-import asyncio
 import uuid
 from pathlib import Path
 

@@ -1,5 +1,4 @@
 """tools/config/snapshot.py: latest frame from REAL Redis (db 15), MinIO fallback, grid PNG."""
-import uuid
 from datetime import datetime, timezone
 
 import cv2
