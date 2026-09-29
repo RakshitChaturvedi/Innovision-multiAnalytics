@@ -4,6 +4,9 @@
 > **Services Affected:** `event_processing`, `shared`  
 > **Date:** 2026-09-27  
 
+> **Running against the real platform:** follow [`docs/INTEGRATION.md`](docs/INTEGRATION.md)
+> (prerequisites, camera registration, database, zones and enrollment, start/stop, acceptance check).
+
 ---
 
 ## 1. Executive Summary

@@ -45,3 +45,17 @@ async def test_failing_stop_does_not_skip_the_others():
     with pytest.raises(RuntimeError):
         await asyncio.wait_for(run_consumers("t", cs), 5)
     assert all(c.stopped for c in cs)
+
+
+async def test_stop_file_stops_every_consumer(tmp_path, monkeypatch):
+    """Windows has no SIGTERM for a detached process: scripts/down.ps1 creates
+    INNOVISION_STOP_FILE and the service must stop gracefully by itself."""
+    stop = tmp_path / "svc.stop"
+    monkeypatch.setenv("INNOVISION_STOP_FILE", str(stop))
+    cs = [Fake(), Fake()]
+    task = asyncio.create_task(run_consumers("t", cs))
+    await asyncio.sleep(0.1)
+    assert not task.done()
+    stop.write_text("stop")
+    await asyncio.wait_for(task, 5)
+    assert all(c.stopped for c in cs)
