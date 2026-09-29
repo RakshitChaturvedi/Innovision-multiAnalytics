@@ -98,12 +98,37 @@ async def test_single_authorized_row_without_majority_fails_closed(db, make_proc
     assert alert["metadata"]["classification_reason"] == "unidentified_in_restricted"
 
 
-async def test_same_person_on_two_tracks_fails_closed_for_both(db, make_processor, redis_client):
+async def test_dominant_track_keeps_identity_stray_track_alerts(db, make_processor, redis_client):
+    """(a) The authorized person's own track (38 rows) keeps the identity; an
+    unknown person's track with 2 stray rows of that person and no face of
+    its own is unverified and alerts. Old rule: both failed closed."""
     await db.zone()
     person = await db.person(authorized=True)
-    for at in (-3, -2, -1):
-        await db.recognition("enrolled", person=person, at=at, track=7)
-    await db.recognition("enrolled", person=person, at=-2, track=8)
+    for i in range(38):
+        await db.recognition("enrolled", person=person, at=-0.5 * i, track=7)
+    for at in (-3, -1):
+        await db.recognition("enrolled", person=person, at=at, track=8)
+    proc, _ = make_processor()
+
+    await proc.handle(zone_event(track=7))
+    await proc.handle(zone_event(track=8, seq=11))
+
+    (alert,) = await alerts(redis_client)
+    assert alert["metadata"]["track_id"] == 8
+    assert alert["metadata"]["classification_reason"] == "unidentified_in_restricted"
+    assert proc.metrics["identity_conflict"] == 1
+
+
+@pytest.mark.parametrize("counts", [(5, 4), (4, 4), (6, 4)])
+async def test_same_person_on_two_tracks_without_clear_winner_fails_closed_for_both(
+    db, make_processor, redis_client, counts
+):
+    """(b) 5 vs 4 (and a tie, and 6 vs 4 < 2x): no track keeps the identity."""
+    await db.zone()
+    person = await db.person(authorized=True)
+    for track, n in zip((7, 8), counts):
+        for i in range(n):
+            await db.recognition("enrolled", person=person, at=-0.5 * i, track=track)
     proc, _ = make_processor()
 
     await proc.handle(zone_event(track=7))
@@ -113,6 +138,85 @@ async def test_same_person_on_two_tracks_fails_closed_for_both(db, make_processo
     assert sorted(a["metadata"]["track_id"] for a in got) == [7, 8]
     assert {a["metadata"]["classification_reason"] for a in got} == {"unidentified_in_restricted"}
     assert proc.metrics["identity_conflict"] == 2
+
+
+async def test_exactly_twice_the_runner_up_keeps_identity(db, make_processor, redis_client):
+    await db.zone()
+    person = await db.person(authorized=True)
+    for i in range(4):
+        await db.recognition("enrolled", person=person, at=-0.5 * i, track=7)
+    for i in range(2):
+        await db.recognition("enrolled", person=person, at=-0.5 * i, track=8)
+    proc, _ = make_processor()
+
+    await proc.handle(zone_event(track=7))
+    await proc.handle(zone_event(track=8, seq=11))
+
+    (alert,) = await alerts(redis_client)
+    assert alert["metadata"]["track_id"] == 8
+
+
+async def test_losing_rows_still_count_against_the_majority(db, make_processor, redis_client):
+    """Track 8 loses 2 rows of P to track 7; its single row of authorized Q
+    must not become a majority by dropping them."""
+    await db.zone()
+    p = await db.person(authorized=True)
+    q = await db.person(authorized=True)
+    for i in range(10):
+        await db.recognition("enrolled", person=p, at=-0.5 * i, track=7)
+    for at in (-3, -2):
+        await db.recognition("enrolled", person=p, at=at, track=8)
+    await db.recognition("enrolled", person=q, at=-1, track=8)
+    proc, _ = make_processor()
+
+    await proc.handle(zone_event(track=8, seq=11))
+
+    (alert,) = await alerts(redis_client)
+    assert alert["metadata"]["classification_reason"] == "unidentified_in_restricted"
+
+
+async def test_blocklist_wins_on_dominant_track(db, make_processor, redis_client):
+    await db.zone()
+    person = await db.person(authorized=True, blocklisted=True)
+    for i in range(10):
+        await db.recognition("enrolled", person=person, at=-0.5 * i, track=7)
+    await db.recognition("enrolled", person=person, at=-1, track=8)
+    proc, _ = make_processor()
+
+    await proc.handle(zone_event(track=7))
+    await proc.handle(zone_event(track=8, seq=11))
+
+    got = await alerts(redis_client)
+    assert {a["metadata"]["classification_reason"] for a in got} == {"blocklisted"}
+    assert sorted(a["metadata"]["track_id"] for a in got) == [7, 8]
+
+
+async def test_authorized_person_alone_never_alerts(db, make_processor, redis_client):
+    """(c)"""
+    await db.zone()
+    person = await db.person(authorized=True)
+    for i in range(5):
+        await db.recognition("enrolled", person=person, at=-0.5 * i, track=7)
+    proc, _ = make_processor()
+
+    await proc.handle(zone_event(track=7))
+
+    assert await alerts(redis_client) == []
+    assert proc.metrics["identity_conflict"] == 0
+
+
+async def test_authorized_person_alone_with_one_visitor_row_never_alerts(db, make_processor, redis_client):
+    """(d) five enrolled rows + one visitor row (face briefly below threshold)."""
+    await db.zone()
+    person = await db.person(authorized=True)
+    for i in range(5):
+        await db.recognition("enrolled", person=person, at=-0.5 * i, track=7)
+    await db.recognition("visitor", person=person, at=-3, sim=0.62, track=7)
+    proc, _ = make_processor()
+
+    await proc.handle(zone_event(track=7))
+
+    assert await alerts(redis_client) == []
 
 
 async def test_same_person_on_other_track_outside_window_is_no_conflict(db, make_processor, redis_client):

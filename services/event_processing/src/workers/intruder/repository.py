@@ -117,43 +117,45 @@ class IntruderRepository:
             for r in rows
         ]
 
-    async def persons_on_other_tracks(
+    async def enrolled_row_counts_by_track(
         self,
         camera_id: str,
-        track_id: int,
         person_ids: list[str],
         start: datetime,
         end: datetime,
-    ) -> set[str]:
-        """Which of `person_ids` are ENROLLED matches on a DIFFERENT track of
-        the same camera within [start, end] (bounded: one camera, one window)."""
+    ) -> dict[str, dict[int, int]]:
+        """ENROLLED rows per (person, track) of `person_ids` on this camera
+        within [start, end] (bounded: one camera, one window):
+        {person_id: {track_id: count}}."""
 
         if not person_ids:
-            return set()
+            return {}
 
         async with self._session_factory() as session:
             result = await session.execute(
                 text(
                     """
-                    SELECT DISTINCT person_id
+                    SELECT person_id, track_id, count(*) AS n
                     FROM recognition_events
                     WHERE camera_id = CAST(:camera_id AS uuid)
-                      AND track_id <> :track_id
                       AND identity_tag = 'enrolled'
                       AND person_id = ANY(CAST(:ids AS uuid[]))
                       AND timestamp >= :start
                       AND timestamp <= :end
+                    GROUP BY person_id, track_id
                     """
                 ),
                 {
                     "camera_id": camera_id,
-                    "track_id": track_id,
                     "ids": person_ids,
                     "start": start,
                     "end": end,
                 },
             )
-            return {str(r.person_id) for r in result.fetchall()}
+            counts: dict[str, dict[int, int]] = {}
+            for r in result.fetchall():
+                counts.setdefault(str(r.person_id), {})[int(r.track_id)] = int(r.n)
+            return counts
 
     async def blocklisted_person_ids(
         self, person_ids: list[str], at: datetime

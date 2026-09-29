@@ -1,4 +1,5 @@
 from collections import Counter
+from collections.abc import Mapping
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
 
@@ -132,12 +133,52 @@ def _unidentified(zone_type, authorized_person_ids):
     )
 
 
+def resolve_identity_conflicts(
+    track_id: int,
+    enrolled_counts: Mapping[str, Mapping[int, int]],
+) -> tuple[set[str], set[str]]:
+    """
+    One person cannot be two tracks at once. For every person matched
+    (ENROLLED) on several tracks of the same camera in the window, only a
+    clearly dominant track keeps the identity: strictly the most rows AND
+    at least twice the runner-up.
+
+    `enrolled_counts` is {person_id: {track_id: enrolled rows}}.
+
+    Returns (conflicted, unverified) for `track_id`:
+      conflicted -> no track dominates: this track fails closed
+      unverified -> another track dominates: this track's rows of that
+                    person carry no identity
+    """
+
+    conflicted: set[str] = set()
+    unverified: set[str] = set()
+
+    for person_id, per_track in enrolled_counts.items():
+        tracks = {t: n for t, n in per_track.items() if n > 0}
+        if len(tracks) < 2 or track_id not in tracks:
+            continue
+
+        (winner, top), (_, runner_up) = sorted(
+            tracks.items(), key=lambda kv: kv[1], reverse=True
+        )[:2]
+
+        if top > runner_up and top >= 2 * runner_up:
+            if winner != track_id:
+                unverified.add(person_id)
+        else:
+            conflicted.add(person_id)
+
+    return conflicted, unverified
+
+
 def decide(
     rows: list[dict],
     zone_type: str,
     authorized_person_ids: list[str],
     blocklisted_person_ids: set[str],
     conflicted_person_ids: AbstractSet[str] = frozenset(),
+    unverified_person_ids: AbstractSet[str] = frozenset(),
 ) -> tuple[IntruderClassification | None, dict | None]:
     """
     Classify one track from ALL its recognition rows in the time window.
@@ -147,13 +188,17 @@ def decide(
       1. a blocklisted person in any row -> blocklisted (every zone)
       2. non-restricted zone -> no alert
       3. no rows at all -> fail closed (unidentified_in_restricted)
-      4. an ENROLLED person of this track that is also matched on ANOTHER
-         track of the same camera in the window (`conflicted_person_ids`)
-         -> the identity is unverified: fail closed
-      5. authorized only if ONE authorized enrolled person holds a strict
-         majority of the track's rows; authorized rows without a majority
-         -> fail closed (a single stray match never authorizes)
-      6. otherwise the highest-similarity row decides
+      4. an ENROLLED person of this track that is also matched on another
+         track with no clearly dominant track (`conflicted_person_ids`, see
+         resolve_identity_conflicts) -> fail closed
+      5. rows of a person that another track dominates
+         (`unverified_person_ids`) carry no identity: they still count in
+         the majority denominator, but never as an identity
+      6. authorized only if ONE authorized enrolled person holds a strict
+         majority of ALL the track's rows; authorized rows without a
+         majority -> fail closed (a single stray match never authorizes)
+      7. otherwise the highest-similarity identified row decides; no
+         identified row left -> fail closed
     """
 
     for row in rows:
@@ -183,6 +228,15 @@ def decide(
     if any(r["person_id"] in conflicted_person_ids for r in enrolled):
         return _unidentified(zone_type, authorized_person_ids), None
 
+    def lost(r):
+        return (
+            r["identity_tag"] == IdentityTag.ENROLLED.value
+            and r.get("person_id") in unverified_person_ids
+        )
+
+    enrolled = [r for r in enrolled if not lost(r)]
+    identified = [r for r in rows if not lost(r)]
+
     authorized_rows = [r for r in enrolled if r["person_id"] in authorized_person_ids]
     if authorized_rows:
         person_id, votes = Counter(r["person_id"] for r in authorized_rows).most_common(1)[0]
@@ -194,7 +248,10 @@ def decide(
             return None, chosen
         return _unidentified(zone_type, authorized_person_ids), None
 
-    best = max(rows, key=lambda r: float(r["similarity_score"]))
+    if not identified:
+        return _unidentified(zone_type, authorized_person_ids), None
+
+    best = max(identified, key=lambda r: float(r["similarity_score"]))
 
     return (
         classify_intruder(
