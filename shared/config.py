@@ -8,7 +8,7 @@ class Settings(BaseSettings):
     REDIS_HOST: str = "redis"
     REDIS_PORT: int = 6379
     DATABASE_URL: str = (
-        "postgresql+asyncpg://postgres:postgres@localhost:5432/innovision_analytics"
+        "postgresql+asyncpg://analytics:analytics@localhost:5432/innovision_analytics"
     )
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")

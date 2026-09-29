@@ -33,7 +33,7 @@ class DetectionSettings(BaseSettings):
     redis_port: int = Field(default=6379)
 
     database_url: str = Field(
-        default="postgresql+asyncpg://postgres:postgres@postgres:5432/innovision_analytics",
+        default="postgresql+asyncpg://analytics:analytics@postgres:5432/innovision_analytics",
     )
 
     db_pool_size: int = Field(default=5)

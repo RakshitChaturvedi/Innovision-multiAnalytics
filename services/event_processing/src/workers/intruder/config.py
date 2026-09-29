@@ -12,7 +12,7 @@ class IntruderConfig(ServiceSettings):
     REDIS_PORT: int = 6379
 
     DATABASE_URL: str = (
-        "postgresql+asyncpg://postgres:postgres@postgres:5432/innovision_analytics"
+        "postgresql+asyncpg://analytics:analytics@postgres:5432/innovision_analytics"
     )
 
     ZONE_EVENTS_STREAM: ClassVar[str] = "events:zone"
