@@ -72,4 +72,9 @@ def test_no_two_migrations_add_the_same_column():
 def test_0007_sits_on_top_of_0006_reliability(script):
     rev = script.get_revision("0007_headcount_breach_state")
     assert rev.down_revision == "0006_reliability"
-    assert script.get_heads() == ["0007_headcount_breach_state"]
+
+
+def test_0008_cooldown_is_the_single_head_on_top_of_0007(script):
+    rev = script.get_revision("0008_intruder_alert_cooldown")
+    assert rev.down_revision == "0007_headcount_breach_state"
+    assert script.get_heads() == ["0008_intruder_alert_cooldown"]
