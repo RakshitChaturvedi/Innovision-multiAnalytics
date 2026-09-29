@@ -85,6 +85,18 @@ make health       # python tools/check_health.py  (stream lengths, pending, DLQ,
 
 Dev Redis runs with `--maxmemory-policy volatile-lru --appendonly yes` (same as what we ask the platform to use).
 
+### Test isolation (NON-NEGOTIABLE)
+
+- Tests must NEVER point at the platform's Redis. They use a dedicated database index
+  `TEST_REDIS_DB` (default 15) on `TEST_REDIS_URL` (host/port, default `redis://127.0.0.1:6379`).
+  A session guard in `tests/conftest.py` refuses to run if the target database is 0.
+- Only that database is flushed (`flushdb`, never `flushall`). Build every test Redis URL with
+  `tests/redis_target.py` and point services under test at it with `point_services_at_test_redis()`
+  (services read `REDIS_DB` from env, default 0).
+- Postgres tests use `TEST_DATABASE_URL` (recreated per run; tests that drop the schema use its
+  `_scratch` sibling). Real-service fixtures live in `tests/conftest.py`; they skip locally when a
+  service is unreachable and FAIL in CI (`REQUIRE_REAL_SERVICES=1`).
+
 ## 5. Streams and groups
 
 | Stream | Producer | Consumer groups |

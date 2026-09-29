@@ -13,6 +13,8 @@ from datetime import UTC, datetime
 import pytest
 import redis.asyncio as aioredis
 
+from tests import redis_target
+
 from tests.recognition_fakes import (  # noqa: F401  (re-exported for the tests)
     FakeFace,
     FrameFaceLoader,
@@ -26,7 +28,7 @@ from tests.recognition_fakes import (  # noqa: F401  (re-exported for the tests)
 @pytest.fixture(scope="session")
 def redis_port():
     if shutil.which("redis-server") is None:
-        pytest.skip("redis-server not installed")
+        redis_target.unavailable("redis-server not installed")
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         port = s.getsockname()[1]
@@ -47,8 +49,8 @@ def redis_port():
 
 @pytest.fixture
 async def redis(redis_port):
-    client = aioredis.from_url(f"redis://127.0.0.1:{redis_port}", decode_responses=False)
-    await client.flushall()
+    client = aioredis.from_url(redis_target.url("127.0.0.1", redis_port), decode_responses=False)
+    await client.flushdb()  # the dedicated test database only
     yield client
     await client.aclose()
 

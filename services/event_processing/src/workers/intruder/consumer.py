@@ -48,7 +48,7 @@ class IntruderConsumer(BaseStreamConsumer):
     async def start(self):
 
         self._publisher = await aioredis.from_url(
-            f"redis://{config.REDIS_HOST}:{config.REDIS_PORT}"
+            f"redis://{config.REDIS_HOST}:{config.REDIS_PORT}/{config.REDIS_DB}"
         )
 
         self._processor = IntruderProcessor(

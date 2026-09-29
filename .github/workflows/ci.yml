@@ -129,9 +129,12 @@ jobs:
     env:
       DATABASE_URL: postgresql+asyncpg://analytics:analytics@localhost:5432/innovision_analytics
       TEST_DATABASE_URL: postgresql+asyncpg://analytics:analytics@localhost:5432/innovision_analytics_test
-      TEST_REDIS_URL: redis://localhost:6379/15
-      HEADCOUNT_TEST_DATABASE_URL: postgresql+asyncpg://analytics:analytics@localhost:5432/innovision_hc_test
-      HEADCOUNT_TEST_REDIS_URL: redis://localhost:6379/14
+      # Tests use a dedicated Redis database, never 0 (the platform's).
+      TEST_REDIS_URL: redis://localhost:6379
+      TEST_REDIS_DB: "15"
+      # Real Redis/Postgres unreachable -> the test FAILS instead of skipping,
+      # so a missing service can never hide failures behind skips.
+      REQUIRE_REAL_SERVICES: "1"
 
     steps:
       - uses: actions/checkout@v4
@@ -162,11 +165,6 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y redis-server
           sudo systemctl stop redis-server || true
-
-      - name: Create headcount test database
-        run: >-
-          PGPASSWORD=analytics psql -h localhost -U analytics -d postgres
-          -c "CREATE DATABASE innovision_hc_test"
 
       - name: Migrate (upgrade head, downgrade base, upgrade head)
         run: |

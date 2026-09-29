@@ -195,20 +195,16 @@ async def test_exit_during_grace_fails_closed_once(db, make_processor, redis_cli
 
 async def test_consumer_sweeper_runs_and_stops_quietly(db, pg_url, redis_client, monkeypatch, caplog):
     """Real consumer (real Redis + Postgres): the supervised sweeper alerts a
-    candidate whose grace period passed, and stop() logs no ERROR."""
+    candidate whose grace period passed, into the TEST Redis database only,
+    and stop() logs no ERROR."""
     import asyncio
     import logging
-    import os
     from datetime import datetime, timedelta, timezone
-    from urllib.parse import urlparse
 
     from services.event_processing.src.workers.intruder import consumer as ic
-    from shared.config import settings
+    from tests.redis_target import TEST_REDIS_DB, point_services_at_test_redis
 
-    url = urlparse(os.environ.get("TEST_REDIS_URL", "redis://127.0.0.1:6379/15"))
-    for cfg in (ic.config, settings):
-        monkeypatch.setattr(cfg, "REDIS_HOST", url.hostname)
-        monkeypatch.setattr(cfg, "REDIS_PORT", url.port or 6379)
+    point_services_at_test_redis(monkeypatch)
     monkeypatch.setattr(ic.config, "DATABASE_URL", pg_url)
     monkeypatch.setattr(ic.config, "INTRUDER_SWEEP_INTERVAL_S", 0.05)
     caplog.set_level(logging.DEBUG)
@@ -221,25 +217,16 @@ async def test_consumer_sweeper_runs_and_stops_quietly(db, pg_url, redis_client,
         if c._processor is not None:
             break
         await asyncio.sleep(0.02)
+    assert c._publisher.connection_pool.connection_kwargs["db"] == TEST_REDIS_DB
     # The candidate was created 10 s ago on the wall clock.
     c._processor._wall_clock = lambda: datetime.now(timezone.utc) - timedelta(seconds=10)
     await c._processor.handle(zone_event(at=0))
 
-    async def published():
-        # the consumer publishes to db 0 of the same server; the test client is db 15
-        import redis.asyncio as aioredis
-        r = aioredis.from_url(f"redis://{url.hostname}:{url.port or 6379}")
-        try:
-            return await r.xlen("alerts:live")
-        finally:
-            await r.aclose()
-
-    before = await published()
     for _ in range(100):
-        if await published() > before:
+        if await redis_client.xlen("alerts:live"):
             break
         await asyncio.sleep(0.05)
-    assert await published() == before + 1
+    assert len(await alerts(redis_client)) == 1  # in the test database, flushed after
 
     await c.stop()
     runner.cancel()

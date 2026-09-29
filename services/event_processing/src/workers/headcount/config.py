@@ -10,6 +10,7 @@ class HeadcountConfig(ServiceSettings):
 
     REDIS_HOST: str = "redis"
     REDIS_PORT: int = 6379
+    REDIS_DB: int = 0
 
     DATABASE_URL: str = (
         "postgresql+asyncpg://analytics:analytics@postgres:5432/innovision_analytics"

@@ -94,7 +94,7 @@ class HeadcountConsumer(BaseStreamConsumer):
 
     async def start(self):
         redis_client = await aioredis.from_url(
-            f"redis://{self._cfg.REDIS_HOST}:{self._cfg.REDIS_PORT}"
+            f"redis://{self._cfg.REDIS_HOST}:{self._cfg.REDIS_PORT}/{self._cfg.REDIS_DB}"
         )
         self._cache = redis_client
         self._alerts = AlertPublisher(
